@@ -13,6 +13,9 @@ from database import get_connection
 from models.schemas import DocumentResponse
 from services.processor import extract_text, chunk_text, build_or_update_index
 
+# The embedding model is always all-MiniLM-L6-v2 regardless of which LLM the project uses
+EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+
 router = APIRouter()
 logger = logging.getLogger("ragsmith.documents")
 
@@ -28,7 +31,10 @@ def _get_project_or_404(conn, project_id: int):
 
 
 def _process_document(doc_id: int, project_id: int, file_bytes: bytes, filename: str, model: str):
-    """Background task: extract → chunk → embed → index."""
+    """Background task: extract → chunk → embed → index.
+    NOTE: `model` is the project's LLM model (e.g. 'mistral'). Embeddings always
+    use EMBEDDING_MODEL ('all-MiniLM-L6-v2'), which is a dedicated sentence-transformer.
+    """
     conn = get_connection()
     try:
         conn.execute(
@@ -46,13 +52,13 @@ def _process_document(doc_id: int, project_id: int, file_bytes: bytes, filename:
         if not chunks:
             raise ValueError("Document produced no chunks after processing.")
 
-        # Embed & index
+        # Embed & index — always use the sentence-transformer, NOT the LLM model name
         num_indexed = build_or_update_index(
             project_id=project_id,
             new_chunks=chunks,
             doc_id=doc_id,
             filename=filename,
-            embedding_model=model,
+            embedding_model=EMBEDDING_MODEL,
         )
 
         conn.execute(
@@ -214,5 +220,63 @@ def delete_document(project_id: int, doc_id: int):
         conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
         conn.commit()
         logger.info("Deleted document id=%d from project id=%d", doc_id, project_id)
+    finally:
+        conn.close()
+
+
+@router.post("/{project_id}/doc/{doc_id}/retry", response_model=DocumentResponse)
+def retry_document(project_id: int, doc_id: int, background_tasks: BackgroundTasks):
+    """Re-process a document that previously failed (status='error')."""
+    conn = get_connection()
+    try:
+        project = _get_project_or_404(conn, project_id)
+        row = conn.execute(
+            "SELECT * FROM documents WHERE id = ? AND project_id = ?",
+            (doc_id, project_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Document not found")
+        if row["status"] not in ("error", "pending"):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Document status is '{row['status']}', only 'error' or 'pending' documents can be retried.",
+            )
+
+        file_path = row["file_path"]
+        if not file_path or not os.path.exists(file_path):
+            raise HTTPException(
+                status_code=404,
+                detail="Original file not found on disk. Please re-upload the document.",
+            )
+
+        with open(file_path, "rb") as f:
+            file_bytes = f.read()
+
+        # Reset status
+        conn.execute(
+            "UPDATE documents SET status='pending', error_msg=NULL, num_chunks=0 WHERE id=?",
+            (doc_id,),
+        )
+        conn.commit()
+
+        background_tasks.add_task(
+            _process_document,
+            doc_id=doc_id,
+            project_id=project_id,
+            file_bytes=file_bytes,
+            filename=row["filename"],
+            model=project["model"],
+        )
+
+        updated = conn.execute("SELECT * FROM documents WHERE id = ?", (doc_id,)).fetchone()
+        return DocumentResponse(
+            id=updated["id"],
+            project_id=updated["project_id"],
+            filename=updated["filename"],
+            num_chunks=updated["num_chunks"],
+            status=updated["status"],
+            error_msg=updated["error_msg"],
+            created_at=updated["created_at"],
+        )
     finally:
         conn.close()

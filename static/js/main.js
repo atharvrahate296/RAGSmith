@@ -201,6 +201,7 @@ function renderDocuments() {
         </div>
       </div>
       <span class="doc-status status-${d.status}">${d.status}</span>
+      ${d.status === 'error' ? `<button class="btn btn-ghost" style="font-size:11px;padding:5px 10px;" title="Retry processing" onclick="retryDocument(${d.id})">↺ Retry</button>` : ''}
       <button class="btn-icon" title="Delete" onclick="deleteDocument(${d.id})">🗑</button>
     </div>
   `).join('');
@@ -241,6 +242,17 @@ async function deleteDocument(docId) {
     await loadDocuments();
   } catch (e) {
     toast(e.message, 'error');
+  }
+}
+
+async function retryDocument(docId) {
+  try {
+    await api('POST', `/documents/${state.activeProject.id}/doc/${docId}/retry`);
+    toast('Retrying document processing…', 'info');
+    await loadDocuments();
+    scheduleDocPoll();
+  } catch (e) {
+    toast('Retry failed: ' + e.message, 'error');
   }
 }
 

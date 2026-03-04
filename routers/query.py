@@ -16,6 +16,9 @@ from services.llm import generate_answer, check_ollama_running
 router = APIRouter()
 logger = logging.getLogger("ragsmith.query")
 
+# Embedding model is always the sentence-transformer, never the LLM model
+EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+
 
 def _get_project_or_404(conn, project_id: int):
     row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
@@ -67,7 +70,7 @@ def query_project(project_id: int, body: QueryRequest):
             project_id=project_id,
             query_text=body.query,
             top_k=top_k,
-            embedding_model="all-MiniLM-L6-v2",
+            embedding_model=EMBEDDING_MODEL,
         )
 
         if not results:

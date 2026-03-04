@@ -4,7 +4,8 @@ __pycache__/
 .venv/
 venv/
 .env
-
+data/
+logs/
 # [cite_start]RAGSmith Database [cite: 23]
 *.sqlite
 *.db
