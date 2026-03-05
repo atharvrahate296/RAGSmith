@@ -5,6 +5,7 @@ __pycache__/
 venv/
 .env
 data/
+exports/
 logs/
 # [cite_start]RAGSmith Database [cite: 23]
 *.sqlite
