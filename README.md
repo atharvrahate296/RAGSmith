@@ -48,7 +48,7 @@ ollama pull mistral
 ### 4. Run RAGSmith
 
 ```bash
-python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
+python -m uvicorn main:app --reload --host localhost --port 8000
 ```
 
 Then open **http://localhost:8000** in your browser.
