@@ -1,7 +1,7 @@
 """
 RAGSmith – Document processing pipeline
 
-Upload → Extract → Chunk → Embed → Index → Store
+Upload → Extract → Chunk → Embed → Index (FAISS + BM25) → Store
 
 Supported file types: PDF, TXT, MD, DOCX
 """
@@ -11,16 +11,25 @@ import os
 import pickle
 import logging
 import pathlib
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 
 import numpy as np
 
 from services.embeddings import embed_texts
+from services.retriever import (
+    build_bm25_index,
+    bm25_search,
+    reciprocal_rank_fusion,
+    save_bm25_index,
+    load_bm25_index,
+    delete_bm25_index,
+)
 
 logger = logging.getLogger("ragsmith.processor")
 
 CHUNK_SIZE = 500        # characters
 CHUNK_OVERLAP = 100     # characters
+HYBRID_RECALL_N = 20    # candidates fetched from each retriever before RRF
 
 
 # ── Text Extraction ───────────────────────────────────────────────────────────
@@ -165,6 +174,7 @@ def build_or_update_index(
 ) -> int:
     """
     Embed new_chunks and add them to the project's FAISS index.
+    Also rebuilds the BM25 index over all chunks (including the new ones).
     Returns the number of chunks successfully indexed.
     """
     try:
@@ -207,19 +217,27 @@ def build_or_update_index(
     for chunk_text_val in new_chunks:
         existing_chunks.append(
             {
-                "text": chunk_text_val,
-                "doc_id": doc_id,
+                "text":     chunk_text_val,
+                "doc_id":   doc_id,
                 "filename": filename,
             }
         )
 
-    # Persist
+    # Persist FAISS index and chunk metadata
     os.makedirs(os.path.dirname(idx_path), exist_ok=True)
     faiss.write_index(index, idx_path)
     with open(pkl_path, "wb") as f:
         pickle.dump(existing_chunks, f)
 
-    logger.info("Index updated: %d total vectors", index.ntotal)
+    # Rebuild BM25 index over ALL chunks (incremental BM25 is not supported)
+    all_texts = [c["text"] for c in existing_chunks]
+    bm25_index = build_bm25_index(all_texts)
+    save_bm25_index(project_id, bm25_index)
+
+    logger.info(
+        "Index updated: %d FAISS vectors, %d BM25 docs",
+        index.ntotal, len(all_texts),
+    )
     return len(new_chunks)
 
 
@@ -228,13 +246,21 @@ def search_index(
     query_text: str,
     top_k: int = 5,
     embedding_model: str = "all-MiniLM-L6-v2",
-) -> List[Tuple[str, float, str]]:
+    hybrid_recall_n: int = HYBRID_RECALL_N,
+) -> List[Dict]:
     """
-    Search the project's FAISS index.
+    Hybrid search: FAISS dense + BM25 sparse, fused with RRF.
 
     Returns
     -------
-    List of (chunk_text, score, filename) tuples, best-first.
+    List of dicts (up to hybrid_recall_n), sorted by rrf_score descending.
+    Each dict contains:
+        text         : str
+        filename     : str
+        doc_id       : int
+        dense_score  : float
+        bm25_score   : float
+        rrf_score    : float
     """
     try:
         import faiss
@@ -254,25 +280,53 @@ def search_index(
     from services.embeddings import embed_query
     q_vec = embed_query(query_text, model_name=embedding_model)
 
-    k = min(top_k, index.ntotal)
-    if k == 0:
+    recall_n = min(hybrid_recall_n, index.ntotal)
+    if recall_n == 0:
         return []
 
-    scores, indices = index.search(q_vec, k)
+    # ── Stage 1a: Dense FAISS search ──────────────────────────────────────────
+    scores, indices = index.search(q_vec, recall_n)
+    dense_ranked: List[Tuple[int, float]] = [
+        (int(idx), float(score))
+        for score, idx in zip(scores[0], indices[0])
+        if idx >= 0 and idx < len(chunk_meta)
+    ]
 
+    # ── Stage 1b: BM25 sparse search ──────────────────────────────────────────
+    bm25_index = load_bm25_index(project_id)
+    if bm25_index is not None:
+        bm25_ranked = bm25_search(bm25_index, query_text, top_n=recall_n)
+    else:
+        # Fallback: treat dense results as bm25 results (degraded gracefully)
+        logger.warning("BM25 index not found for project %d — using dense only", project_id)
+        bm25_ranked = dense_ranked
+
+    # ── Stage 1c: RRF Fusion ──────────────────────────────────────────────────
+    fused = reciprocal_rank_fusion(dense_ranked, bm25_ranked)
+
+    # ── Assemble result dicts ──────────────────────────────────────────────────
     results = []
-    for score, idx in zip(scores[0], indices[0]):
+    for item in fused:
+        idx = item["idx"]
         if idx < 0 or idx >= len(chunk_meta):
             continue
         meta = chunk_meta[idx]
-        results.append((meta["text"], float(score), meta["filename"]))
+        results.append({
+            "text":        meta["text"],
+            "filename":    meta["filename"],
+            "doc_id":      meta.get("doc_id", 0),
+            "dense_score": round(item["dense_score"], 4),
+            "bm25_score":  round(item["bm25_score"], 4),
+            "rrf_score":   round(item["rrf_score"], 6),
+        })
 
     return results
 
 
 def delete_project_index(project_id: int) -> None:
-    """Remove all index files for a project."""
+    """Remove all index files for a project (FAISS + BM25 + chunks)."""
     for path in [_index_path(project_id), _chunks_path(project_id)]:
         if os.path.exists(path):
             os.remove(path)
             logger.info("Deleted: %s", path)
+    delete_bm25_index(project_id)

@@ -1,6 +1,7 @@
 /**
- * RAGSmith – Frontend SPA
- * Pure Vanilla JS, no framework dependencies
+ * RAGSmith – Frontend SPA v2.0
+ * Pure Vanilla JS — no framework dependencies
+ * New in v2.0: Hybrid search scores, re-rank display, confidence badges, grounding bars
  */
 
 'use strict';
@@ -285,7 +286,15 @@ async function sendQuery() {
   try {
     const res = await api('POST', `/query/${state.activeProject.id}`, { query });
     removeThinking(thinkingId);
-    state.chatHistory.push({ role: 'ai', content: res.answer, sources: res.sources, model: res.model });
+    state.chatHistory.push({
+      role: 'ai',
+      content: res.answer,
+      sources: res.sources,
+      model: res.model,
+      grounding_score: res.grounding_score ?? 0,
+      query_relevance: res.query_relevance ?? 0,
+      confidence_label: res.confidence_label ?? 'low',
+    });
     renderChat();
   } catch (e) {
     removeThinking(thinkingId);
@@ -298,13 +307,76 @@ async function sendQuery() {
   }
 }
 
+// ── Confidence helpers ─────────────────────────────────────────────────────
+function confidenceEmoji(label) {
+  return { high: '🟢', medium: '🟡', low: '🔴' }[label] ?? '⚪';
+}
+
+function clamp01(v) { return Math.min(1, Math.max(0, v || 0)); }
+
+function confidenceBadgeHtml(label, grounding, relevance) {
+  const emoji = confidenceEmoji(label);
+  const cls   = `confidence-${label}`;
+  const gPct  = (clamp01(grounding) * 100).toFixed(1);
+  const rPct  = (clamp01(relevance) * 100).toFixed(1);
+  const gW    = (clamp01(grounding) * 100).toFixed(1);
+  const rW    = (clamp01(relevance) * 100).toFixed(1);
+
+  return `
+    <div class="confidence-block">
+      <span class="confidence-badge ${cls}">${emoji} ${label} confidence</span>
+    </div>
+    <div class="score-bars">
+      <div class="score-bar-row">
+        <span class="score-bar-label">Grounding</span>
+        <div class="score-bar-track">
+          <div class="score-bar-fill grounding" style="width:${gW}%"></div>
+        </div>
+        <span class="score-bar-value">${gPct}%</span>
+      </div>
+      <div class="score-bar-row">
+        <span class="score-bar-label">Relevance</span>
+        <div class="score-bar-track">
+          <div class="score-bar-fill relevance" style="width:${rW}%"></div>
+        </div>
+        <span class="score-bar-value">${rPct}%</span>
+      </div>
+    </div>`;
+}
+
+function sourceItemHtml(s, i) {
+  const isTop  = s.is_top_source;
+  const rankChange = s.original_rank - i;  // positive = jumped up
+  let rankHtml = '';
+  if (s.original_rank !== undefined && s.original_rank !== i) {
+    if (rankChange > 0) {
+      rankHtml = `<div class="source-rank-change improved">↑ jumped from rank #${s.original_rank + 1} → #${i + 1} after re-ranking</div>`;
+    } else {
+      rankHtml = `<div class="source-rank-change dropped">↓ moved from rank #${s.original_rank + 1} → #${i + 1}</div>`;
+    }
+  }
+
+  return `
+    <div class="source-item${isTop ? ' top-source' : ''}">
+      <div class="source-file">📄 ${escHtml(s.doc_filename)}</div>
+      <div class="source-scores">
+        <span class="source-score-pill">Dense <span>${(s.dense_score || 0).toFixed(4)}</span></span>
+        <span class="source-score-pill">BM25 <span>${(s.bm25_score || 0).toFixed(4)}</span></span>
+        <span class="source-score-pill">RRF <span>${(s.rrf_score || 0).toFixed(6)}</span></span>
+        <span class="source-score-pill">Rerank <span>${(s.rerank_score || 0).toFixed(4)}</span></span>
+      </div>
+      ${rankHtml}
+      <div class="source-preview">${escHtml(s.text.substring(0, 200))}…</div>
+    </div>`;
+}
+
+// ── Render Chat ────────────────────────────────────────────────────────────
 function renderChat() {
   const container = document.getElementById('chat-container');
   const empty = document.getElementById('chat-empty');
 
   if (!state.chatHistory.length) {
     empty.style.display = 'flex';
-    // Remove all message nodes
     Array.from(container.children)
       .filter(c => c !== empty && !c.classList.contains('thinking'))
       .forEach(c => c.remove());
@@ -312,7 +384,6 @@ function renderChat() {
   }
 
   empty.style.display = 'none';
-  // Clear and re-render (simple, avoids keying)
   Array.from(container.children)
     .filter(c => c !== empty && !c.id?.startsWith('thinking'))
     .forEach(c => c.remove());
@@ -327,23 +398,26 @@ function renderChat() {
         <div class="chat-msg-label">YOU</div>
         <div class="bubble">${escHtml(msg.content)}</div>`;
     } else {
+      // Confidence + grounding bars (only when we have evaluation data)
+      const hasEval = msg.confidence_label && msg.confidence_label !== 'low' ||
+                      msg.grounding_score > 0 || msg.query_relevance > 0;
+      const evalHtml = (msg.sources?.length && hasEval !== false && msg.confidence_label)
+        ? confidenceBadgeHtml(msg.confidence_label, msg.grounding_score, msg.query_relevance)
+        : '';
+
+      // Sources dropdown
       const sourcesHtml = msg.sources?.length ? `
         <button class="sources-toggle" onclick="toggleSources(this)">
           ▸ ${msg.sources.length} source${msg.sources.length > 1 ? 's' : ''} · ${escHtml(msg.model || '')}
         </button>
         <div class="sources-list">
-          ${msg.sources.map(s => `
-            <div class="source-item">
-              <div class="source-file">📄 ${escHtml(s.doc_filename)}</div>
-              <div class="source-score">relevance: ${s.score.toFixed(4)}</div>
-              <div class="source-preview">${escHtml(s.text.substring(0, 200))}…</div>
-            </div>
-          `).join('')}
+          ${msg.sources.map((s, si) => sourceItemHtml(s, si)).join('')}
         </div>` : '';
 
       el.innerHTML = `
         <div class="chat-msg-label">RAGSMITH</div>
         <div class="bubble">${escHtml(msg.content)}</div>
+        ${evalHtml}
         ${sourcesHtml}`;
     }
     container.appendChild(el);
@@ -389,13 +463,19 @@ async function loadHistory() {
       list.innerHTML = `<div class="empty-state"><div class="empty-state-icon">◷</div><p>No queries yet.</p></div>`;
       return;
     }
-    list.innerHTML = logs.map(l => `
-      <div class="history-item">
-        <div class="history-query">▸ ${escHtml(l.query_text)}</div>
-        <div class="history-answer">${escHtml(l.response)}</div>
-        <div class="history-meta">${l.created_at} · ${l.num_chunks} chunks retrieved</div>
-      </div>
-    `).join('');
+    list.innerHTML = logs.map(l => {
+      const label = l.grounding_score >= 0.75 ? 'high' : l.grounding_score >= 0.50 ? 'medium' : 'low';
+      const emoji = confidenceEmoji(label);
+      const badgeHtml = l.grounding_score > 0
+        ? `<span class="history-confidence confidence-${label}">${emoji} ${(l.grounding_score * 100).toFixed(0)}%</span>`
+        : '';
+      return `
+        <div class="history-item">
+          <div class="history-query">▸ ${escHtml(l.query_text)} ${badgeHtml}</div>
+          <div class="history-answer">${escHtml(l.response)}</div>
+          <div class="history-meta">${l.created_at} · ${l.num_chunks} chunks retrieved</div>
+        </div>`;
+    }).join('');
   } catch (e) {
     toast('Failed to load history: ' + e.message, 'error');
   }

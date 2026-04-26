@@ -52,8 +52,14 @@ class QueryRequest(BaseModel):
 
 class ChunkResult(BaseModel):
     text: str
-    score: float
+    score: float               # primary score (rrf_score for display)
     doc_filename: str
+    dense_score: float = 0.0
+    bm25_score: float = 0.0
+    rrf_score: float = 0.0
+    rerank_score: float = 0.0
+    original_rank: int = 0     # rank before re-ranking (0-indexed)
+    is_top_source: bool = False  # True for the most attributed chunk
 
 
 class QueryResponse(BaseModel):
@@ -61,6 +67,9 @@ class QueryResponse(BaseModel):
     answer: str
     sources: List[ChunkResult]
     model: str
+    grounding_score: float = 0.0
+    query_relevance: float = 0.0
+    confidence_label: str = "low"   # "high" | "medium" | "low"
 
 
 # ── Query Logs ────────────────────────────────────────────────────────────────
@@ -72,6 +81,8 @@ class QueryLogResponse(BaseModel):
     response: str
     num_chunks: int
     created_at: str
+    grounding_score: float = 0.0
+    query_relevance: float = 0.0
 
 
 # ── Export ────────────────────────────────────────────────────────────────────

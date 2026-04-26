@@ -761,3 +761,155 @@ body {
   from { opacity: 0; transform: translateY(6px); }
   to   { opacity: 1; transform: translateY(0); }
 }
+
+/* ── v2.0 Confidence Badge ──────────────────────────────────────── */
+.confidence-block {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.confidence-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 4px 10px;
+  border-radius: 20px;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.confidence-high {
+  background: rgba(46, 213, 115, 0.12);
+  border: 1px solid rgba(46, 213, 115, 0.35);
+  color: var(--success);
+}
+
+.confidence-medium {
+  background: rgba(255, 165, 2, 0.12);
+  border: 1px solid rgba(255, 165, 2, 0.35);
+  color: var(--warn);
+}
+
+.confidence-low {
+  background: rgba(255, 71, 87, 0.12);
+  border: 1px solid rgba(255, 71, 87, 0.35);
+  color: var(--danger);
+}
+
+/* ── v2.0 Score Bars ────────────────────────────────────────────── */
+.score-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 8px;
+  max-width: 320px;
+}
+
+.score-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.score-bar-label {
+  font-size: 10px;
+  color: var(--text3);
+  letter-spacing: 0.3px;
+  width: 76px;
+  flex-shrink: 0;
+  text-align: right;
+}
+
+.score-bar-track {
+  flex: 1;
+  height: 4px;
+  background: var(--surface2);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.score-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 600ms ease;
+}
+
+.score-bar-fill.grounding { background: linear-gradient(90deg, var(--accent2), var(--accent)); }
+.score-bar-fill.relevance { background: linear-gradient(90deg, #a78bfa, var(--accent2)); }
+
+.score-bar-value {
+  font-size: 10px;
+  color: var(--text2);
+  width: 36px;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── v2.0 Source Score Grid ─────────────────────────────────────── */
+.source-scores {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 5px;
+}
+
+.source-score-pill {
+  font-size: 10px;
+  color: var(--text3);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
+.source-score-pill span {
+  color: var(--text2);
+  font-variant-numeric: tabular-nums;
+}
+
+.source-rank-change {
+  font-size: 10px;
+  color: var(--text3);
+  margin-top: 3px;
+}
+
+.source-rank-change.improved { color: var(--success); }
+.source-rank-change.dropped  { color: var(--warn); }
+
+/* ── v2.0 Top Source Highlight ──────────────────────────────────── */
+.source-item.top-source {
+  border-color: rgba(0, 212, 170, 0.4);
+  background: rgba(0, 212, 170, 0.04);
+  position: relative;
+}
+
+.source-item.top-source::before {
+  content: '★ TOP SOURCE';
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  font-size: 9px;
+  letter-spacing: 0.5px;
+  color: var(--accent);
+  font-weight: 700;
+  opacity: 0.7;
+}
+
+/* ── v2.0 History Grounding Badge ───────────────────────────────── */
+.history-confidence {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 20px;
+  margin-left: 6px;
+  vertical-align: middle;
+}

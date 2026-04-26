@@ -139,12 +139,14 @@ CREATE TABLE IF NOT EXISTS documents (
     created_at  TEXT    DEFAULT (datetime('now'))
 );
 CREATE TABLE IF NOT EXISTS query_logs (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    query_text  TEXT    NOT NULL,
-    response    TEXT    NOT NULL,
-    num_chunks  INTEGER DEFAULT 0,
-    created_at  TEXT    DEFAULT (datetime('now'))
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    query_text      TEXT    NOT NULL,
+    response        TEXT    NOT NULL,
+    num_chunks      INTEGER DEFAULT 0,
+    grounding_score REAL    DEFAULT 0,
+    query_relevance REAL    DEFAULT 0,
+    created_at      TEXT    DEFAULT (datetime('now'))
 );
 """
 
@@ -169,12 +171,14 @@ CREATE TABLE IF NOT EXISTS documents (
     created_at  TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE TABLE IF NOT EXISTS query_logs (
-    id          SERIAL PRIMARY KEY,
-    project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    query_text  TEXT    NOT NULL,
-    response    TEXT    NOT NULL,
-    num_chunks  INTEGER DEFAULT 0,
-    created_at  TIMESTAMPTZ DEFAULT NOW()
+    id              SERIAL PRIMARY KEY,
+    project_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    query_text      TEXT    NOT NULL,
+    response        TEXT    NOT NULL,
+    num_chunks      INTEGER DEFAULT 0,
+    grounding_score REAL    DEFAULT 0,
+    query_relevance REAL    DEFAULT 0,
+    created_at      TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE OR REPLACE FUNCTION _ragsmith_update_updated_at()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
@@ -189,8 +193,21 @@ END; $$;
 """
 
 
+# Migration statements — run after schema creation to add new columns
+# to existing databases that were created before v2.0.
+_SQLITE_MIGRATIONS = [
+    "ALTER TABLE query_logs ADD COLUMN grounding_score REAL DEFAULT 0",
+    "ALTER TABLE query_logs ADD COLUMN query_relevance REAL DEFAULT 0",
+]
+
+_PG_MIGRATIONS = [
+    "ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS grounding_score REAL DEFAULT 0",
+    "ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS query_relevance REAL DEFAULT 0",
+]
+
+
 def init_db() -> None:
-    """Create tables if they don't exist."""
+    """Create tables if they don't exist, then apply any pending migrations."""
     from config import get_settings
     cfg = get_settings()
     conn = get_connection()
@@ -198,6 +215,8 @@ def init_db() -> None:
         if cfg.db_driver == "postgres":
             cur = conn.cursor()
             cur.execute(_PG_SCHEMA)
+            for stmt in _PG_MIGRATIONS:
+                cur.execute(stmt)
             conn.commit()
             cur.close()
             # Mask password in log
@@ -206,6 +225,13 @@ def init_db() -> None:
         else:
             conn.executescript(_SQLITE_SCHEMA)
             conn.commit()
+            # SQLite ALTER TABLE does not support IF NOT EXISTS — use try/except
+            for stmt in _SQLITE_MIGRATIONS:
+                try:
+                    conn.execute(stmt)
+                    conn.commit()
+                except Exception:
+                    pass  # Column already exists — safe to ignore
             logger.info("SQLite initialised at %s", cfg.sqlite_path)
     finally:
         conn.close()
