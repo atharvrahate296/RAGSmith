@@ -1,7 +1,7 @@
 /**
- * RAGSmith – Frontend SPA v2.0
+ * RAGSmith – Frontend SPA v2.1
  * Pure Vanilla JS — no framework dependencies
- * New in v2.0: Hybrid search scores, re-rank display, confidence badges, grounding bars
+ * v2.1: Dynamic model switching, Docs view, improved error handling & loading states.
  */
 
 'use strict';
@@ -11,8 +11,12 @@ const state = {
   projects: [],
   activeProject: null,
   documents: [],
-  chatHistory: [],
+  activeSession: null,
+  chatHistory: [], 
+  chatSessions: [],
+  availableModels: { groq: [], ollama: [] }, // Initialize as object
   pollTimers: {},
+  showRetrievalDetails: false,
 };
 
 // ── API Helpers ────────────────────────────────────────────────────────────
@@ -22,7 +26,7 @@ async function api(method, path, body = null, isForm = false) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
   } else if (body && isForm) {
-    opts.body = body; // FormData
+    opts.body = body; 
   }
   const res = await fetch('/api' + path, opts);
   if (res.status === 204) return null;
@@ -48,20 +52,26 @@ function showView(name) {
   document.querySelector(`[data-view="${name}"]`)?.classList.add('active');
 
   if (name === 'documents') loadDocuments();
-  if (name === 'history')   loadHistory();
+  if (name === 'query') {
+    if (state.activeSession) {
+      loadChatHistory(state.activeSession.id);
+    } else {
+      state.chatHistory = [];
+      renderChat();
+    }
+  }
 }
 
 function enableProjectViews(project) {
   state.activeProject = project;
-  ['documents', 'query', 'history'].forEach(v => {
+  ['documents', 'query'].forEach(v => {
     const btn = document.getElementById('nav-' + v);
     if (btn) btn.disabled = false;
   });
-  document.getElementById('active-project-label').textContent =
-    '◈  ' + project.name;
+  document.getElementById('active-project-label').textContent = '◈ ' + project.name;
   document.getElementById('doc-project-name').textContent   = '/ ' + project.name;
   document.getElementById('query-project-name').textContent = '/ ' + project.name;
-  document.getElementById('history-project-name').textContent = '/ ' + project.name;
+  document.getElementById('new-chat-btn').disabled = false;
 }
 
 // ── Projects ───────────────────────────────────────────────────────────────
@@ -91,12 +101,14 @@ function renderProjects() {
       <div class="project-card-header">
         <div class="project-name">${escHtml(p.name)}</div>
         <div class="project-actions">
+          <button class="btn-icon" title="Rename project" onclick="event.stopPropagation(); renameProject(${p.id}, '${escHtml(p.name)}')">✎</button>
           <button class="btn-icon" title="Delete project"
             onclick="event.stopPropagation(); deleteProject(${p.id}, '${escHtml(p.name)}')">🗑</button>
         </div>
       </div>
       <div class="project-desc">${escHtml(p.description) || '<span style="opacity:.4">No description</span>'}</div>
       <div class="project-meta">
+        <span class="badge badge-secondary">${escHtml(p.provider)}</span>
         <span class="badge badge-accent">${escHtml(p.model)}</span>
         <span class="badge">top-k: ${p.top_k}</span>
         <span class="badge">${p.document_count} doc${p.document_count !== 1 ? 's' : ''}</span>
@@ -112,23 +124,34 @@ async function selectProject(id) {
   const project = state.projects.find(p => p.id === id);
   if (!project) return;
   enableProjectViews(project);
-  // Reset chat
+  
+  state.activeSession = null;
   state.chatHistory = [];
   renderChat();
-  renderProjects();
-  showView('documents');
+  renderProjects(); 
+  showView('query'); 
+  loadChatSessions(id); 
 }
 
 async function createProject() {
   const name = document.getElementById('new-project-name').value.trim();
   const desc = document.getElementById('new-project-desc').value.trim();
+  const provider = document.querySelector('input[name="project-provider"]:checked').value;
   const model = document.getElementById('new-project-model').value;
   const topK = parseInt(document.getElementById('new-project-topk').value, 10);
 
-  if (!name) { toast('Project name is required.', 'warn'); return; }
+  if (!name) {
+    toast('Project name is required.', 'warn');
+    return;
+  }
+
+  const createBtn = document.querySelector('#modal-new-project .btn-primary');
+  const originalText = createBtn.textContent;
+  createBtn.textContent = 'Creating...';
+  createBtn.disabled = true;
 
   try {
-    await api('POST', '/projects/', { name, description: desc, model, top_k: topK });
+    await api('POST', '/projects/', { name, description: desc, provider, model, top_k: topK });
     closeModal('modal-new-project');
     document.getElementById('new-project-name').value = '';
     document.getElementById('new-project-desc').value = '';
@@ -136,24 +159,229 @@ async function createProject() {
     await loadProjects();
   } catch (e) {
     toast(e.message, 'error');
+  } finally {
+    createBtn.textContent = originalText;
+    createBtn.disabled = false;
+  }
+}
+
+async function renameProject(projectId, currentName) {
+  const newName = prompt('Enter new project name:', currentName);
+  if (!newName || newName === currentName) return;
+  try {
+    await api('PATCH', `/projects/${projectId}`, { name: newName });
+    toast('Project renamed ✓', 'success');
+    await loadProjects();
+    if (state.activeProject?.id === projectId) {
+        document.getElementById('active-project-label').textContent = '◈  ' + newName;
+    }
+  } catch (e) {
+    toast(e.message, 'error');
   }
 }
 
 async function deleteProject(id, name) {
-  if (!confirm(`Delete project "${name}" and all its documents? This cannot be undone.`)) return;
+  if (!confirm(`Delete project "${name}" and all its documents and chat sessions? This cannot be undone.`)) return;
   try {
     await api('DELETE', `/projects/${id}`);
     if (state.activeProject?.id === id) {
       state.activeProject = null;
+      state.activeSession = null;
+      state.chatSessions = [];
+      state.chatHistory = [];
+      renderChatSessions();
+      renderChat();
       ['documents', 'query', 'history'].forEach(v => {
         const btn = document.getElementById('nav-' + v);
         if (btn) btn.disabled = true;
       });
+      document.getElementById('new-chat-btn').disabled = true;
       document.getElementById('active-project-label').textContent = 'No project selected';
       showView('projects');
     }
     toast('Project deleted', 'success');
     await loadProjects();
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+// ── Chat Sessions ──────────────────────────────────────────────────────────
+async function loadChatSessions(projectId) {
+  try {
+    state.chatSessions = await api('GET', `/sessions/project/${projectId}`);
+    renderChatSessions();
+    if (!state.activeSession && state.chatSessions.length > 0) {
+      selectChatSession(state.chatSessions[0].id);
+    } else if (state.activeSession && !state.chatSessions.find(s => s.id === state.activeSession.id)) {
+      state.activeSession = null;
+      state.chatHistory = [];
+      renderChat();
+    }
+  } catch (e) {
+    toast('Failed to load chat sessions: ' + e.message, 'error');
+  }
+}
+
+function renderChatSessions() {
+  const list = document.getElementById('chat-sessions-list');
+  if (!state.chatSessions.length) {
+    list.innerHTML = `
+      <div class="sessions-empty">
+        <span>No chats yet</span>
+      </div>`;
+    return;
+  }
+
+  list.innerHTML = state.chatSessions.map(s => {
+    const isActive = state.activeSession?.id === s.id;
+    const date = new Date(s.created_at);
+    const now = new Date();
+    const isToday = date.toDateString() === now.toDateString();
+    const dateStr = isToday
+      ? date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+      : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    const modelShort = (s.model || '').split(':')[0].replace('llama-', 'llama').replace('-instant','').slice(0, 16);
+
+    return `
+      <div class="session-item ${isActive ? 'active' : ''}" onclick="selectChatSession(${s.id})" title="${escHtml(s.name)}">
+        <div class="session-item-indicator"></div>
+        <div class="session-item-body">
+          <div class="session-item-name">${escHtml(s.name)}</div>
+          <div class="session-item-meta">
+            <span class="session-model-chip">${escHtml(modelShort)}</span>
+            <span class="session-date">${dateStr}</span>
+          </div>
+        </div>
+        <div class="session-item-actions">
+          <button class="session-action-btn" title="Settings" onclick="event.stopPropagation(); openChatSettings(${s.id})">⚙</button>
+          <button class="session-action-btn danger" title="Delete" onclick="event.stopPropagation(); deleteChatSession(${s.id}, '${escHtml(s.name)}')">✕</button>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+async function selectChatSession(sessionId) {
+  const session = state.chatSessions.find(s => s.id === sessionId);
+  if (!session) return;
+  state.activeSession = session;
+  renderChatSessions(); 
+  document.getElementById('query-project-name').textContent = `/ ${state.activeProject.name} / ${session.name}`;
+  loadChatHistory(sessionId);
+}
+
+async function newChat() {
+  if (!state.activeProject) {
+    toast('Please select a project first.', 'warn');
+    showView('projects');
+    return;
+  }
+  const newChatBtn = document.getElementById('new-chat-btn');
+  const originalText = newChatBtn.textContent;
+  newChatBtn.textContent = 'Creating...';
+  newChatBtn.disabled = true;
+
+  try {
+    const newName = new Date().toLocaleString(undefined, { month: 'numeric', day: 'numeric', year: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' });
+    const session = await api('POST', '/sessions/', {
+      project_id: state.activeProject.id,
+      name: newName,
+      provider: state.activeProject.provider,
+      model: state.activeProject.model, 
+    });
+    state.chatSessions.unshift(session);
+    renderChatSessions();
+    selectChatSession(session.id);
+    showView('query');
+    toast('New chat started ✓', 'success');
+  } catch (e) {
+    toast('Failed to create new chat: ' + e.message, 'error');
+  } finally {
+    newChatBtn.textContent = originalText;
+    newChatBtn.disabled = false;
+  }
+}
+
+async function openChatSettings(sessionId) {
+  const session = state.chatSessions.find(s => s.id === sessionId);
+  if (!session) return;
+
+  document.getElementById('chat-settings-name').value = session.name;
+  const modelSelect = document.getElementById('chat-settings-model');
+  modelSelect.innerHTML = ''; 
+
+  const provider = session.provider || state.activeProject.provider || 'ollama';
+  const models = state.availableModels[provider] || [];
+
+  if (models.length === 0) {
+    modelSelect.innerHTML = '<option value="">No models available</option>';
+    modelSelect.disabled = true;
+  } else {
+    modelSelect.disabled = false;
+    models.forEach(modelName => {
+      const opt = document.createElement('option');
+      opt.value = modelName;
+      opt.textContent = modelName;
+      modelSelect.appendChild(opt);
+    });
+  }
+  modelSelect.value = session.model || state.activeProject.model;
+  modelSelect.dataset.sessionId = sessionId; 
+  openModal('modal-chat-settings');
+}
+
+async function saveChatSettings() {
+  const name = document.getElementById('chat-settings-name').value.trim();
+  const model = document.getElementById('chat-settings-model').value;
+  const sessionId = parseInt(document.getElementById('chat-settings-model').dataset.sessionId, 10);
+
+  if (!name) {
+    toast('Session name is required.', 'warn');
+    return;
+  }
+
+  const saveBtn = document.querySelector('#modal-chat-settings .btn-primary');
+  const originalText = saveBtn.textContent;
+  saveBtn.textContent = 'Saving...';
+  saveBtn.disabled = true;
+
+  try {
+    const currentSession = state.chatSessions.find(s => s.id === sessionId);
+    const provider = currentSession.provider; // Current provider is implicitly used if not changed via UI
+    const updatedSession = await api('PATCH', `/sessions/${sessionId}`, { name, provider, model });
+    toast('Chat settings saved ✓', 'success');
+    closeModal('modal-chat-settings');
+    
+    const idx = state.chatSessions.findIndex(s => s.id === sessionId);
+    if (idx !== -1) {
+      state.chatSessions[idx] = updatedSession;
+    }
+    if (state.activeSession?.id === sessionId) {
+      state.activeSession = updatedSession;
+      document.getElementById('query-project-name').textContent = `/ ${state.activeProject.name} / ${updatedSession.name}`;
+    }
+    renderChatSessions();
+  } catch (e) {
+    toast(e.message, 'error');
+  } finally {
+    saveBtn.textContent = originalText;
+    saveBtn.disabled = false;
+  }
+}
+
+async function deleteChatSession(sessionId, name) {
+  if (!confirm(`Delete chat session "${name}"? This cannot be undone.`)) return;
+  try {
+    await api('DELETE', `/sessions/${sessionId}`);
+    toast('Chat session deleted', 'success');
+    state.chatSessions = state.chatSessions.filter(s => s.id !== sessionId);
+    renderChatSessions();
+    if (state.activeSession?.id === sessionId) {
+      state.activeSession = null;
+      state.chatHistory = [];
+      renderChat();
+      document.getElementById('query-project-name').textContent = `/ ${state.activeProject.name}`;
+    }
   } catch (e) {
     toast(e.message, 'error');
   }
@@ -165,7 +393,6 @@ async function loadDocuments() {
   try {
     state.documents = await api('GET', `/documents/${state.activeProject.id}`);
     renderDocuments();
-    // Poll for processing docs
     const processing = state.documents.filter(d => ['pending','processing'].includes(d.status));
     if (processing.length) scheduleDocPoll();
   } catch (e) {
@@ -266,7 +493,6 @@ function handleQueryKey(e) {
 }
 
 function pipelineAnimate(phase) {
-  // phase: 1=hybrid active, 2=+rerank active, 3=+eval active, 4/0=all idle
   const ids = ['ps-hybrid', 'ps-rerank', 'ps-eval'];
   ids.forEach((id, i) => {
     const el = document.getElementById(id);
@@ -276,7 +502,10 @@ function pipelineAnimate(phase) {
 }
 
 async function sendQuery() {
-  if (!state.activeProject) return;
+  if (!state.activeProject || !state.activeSession) {
+    toast('Please select a project and a chat session first.', 'warn');
+    return;
+  }
   const input = document.getElementById('query-input');
   const query = input.value.trim();
   if (!query) return;
@@ -285,11 +514,9 @@ async function sendQuery() {
   const btn = document.getElementById('query-send-btn');
   btn.disabled = true;
 
-  // Add user bubble
   state.chatHistory.push({ role: 'user', content: query });
   renderChat();
 
-  // Add thinking indicator + animate pipeline
   const thinkingId = 'thinking-' + Date.now();
   appendThinking(thinkingId);
   pipelineAnimate(1);
@@ -297,7 +524,11 @@ async function sendQuery() {
   const t3 = setTimeout(() => pipelineAnimate(3), 800);
 
   try {
-    const res = await api('POST', `/query/${state.activeProject.id}`, { query });
+    const res = await api('POST', `/query/${state.activeProject.id}`, {
+      query,
+      session_id: state.activeSession.id,
+      model: state.activeSession.model || state.activeProject.model,
+    });
     clearTimeout(t2); clearTimeout(t3);
     pipelineAnimate(4);
     setTimeout(() => pipelineAnimate(0), 1500);
@@ -312,6 +543,13 @@ async function sendQuery() {
       confidence_label: res.confidence_label ?? 'low',
     });
     renderChat();
+    
+    const idx = state.chatSessions.findIndex(s => s.id === state.activeSession.id);
+    if (idx !== -1) {
+      state.chatSessions[idx].updated_at = new Date().toISOString();
+      state.chatSessions.sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+      renderChatSessions();
+    }
   } catch (e) {
     clearTimeout(t2); clearTimeout(t3);
     pipelineAnimate(0);
@@ -325,31 +563,138 @@ async function sendQuery() {
   }
 }
 
+async function loadChatHistory(sessionId) {
+  try {
+    const logs = await api('GET', `/sessions/${sessionId}/history`);
+    state.chatHistory = logs.map(l => [
+      { role: 'user', content: l.query_text },
+      { 
+        role: 'ai', 
+        content: l.response, 
+        sources: [], 
+        model: l.model,
+        grounding_score: l.grounding_score ?? 0,
+        query_relevance: l.query_relevance ?? 0,
+        confidence_label: l.confidence_label ?? 'low'
+      }
+    ]).flat();
+    renderChat();
+  } catch (e) {
+    toast('Failed to load chat history: ' + e.message, 'error');
+    state.chatHistory = [];
+    renderChat();
+  }
+}
+
+function renderChat() {
+  const container = document.getElementById('chat-container');
+  const empty = document.getElementById('chat-empty');
+
+  if (!state.chatHistory.length) {
+    empty.style.display = 'flex';
+    Array.from(container.children)
+      .filter(c => c !== empty && !c.classList.contains('thinking'))
+      .forEach(c => c.remove());
+    return;
+  }
+
+  empty.style.display = 'none';
+  Array.from(container.children)
+    .filter(c => c !== empty && !c.id?.startsWith('thinking'))
+    .forEach(c => c.remove());
+
+  state.chatHistory.forEach((msg, i) => {
+    const el = document.createElement('div');
+    el.className = `chat-msg chat-msg-${msg.role}`;
+
+    if (msg.role === 'user') {
+      el.innerHTML = `
+        <div class="chat-msg-label">YOU</div>
+        <div class="bubble">${escHtml(msg.content)}</div>`;
+    } else {
+      const hasScores = (msg.grounding_score ?? 0) > 0 || (msg.query_relevance ?? 0) > 0;
+      const evalHtml = hasScores
+        ? confidenceBadgeHtml(msg.confidence_label ?? 'low', msg.grounding_score ?? 0, msg.query_relevance ?? 0)
+        : '';
+      const capturedCardSeq = _cardSeq;
+
+      const sourcesHtml = msg.sources?.length ? `
+        <div class="sources-header">
+          <button class="sources-toggle" onclick="toggleSources(this)">
+            ▸ ${msg.sources.length} source${msg.sources.length > 1 ? 's' : ''} · ${escHtml(msg.provider || 'unknown')} / ${escHtml(msg.model || '')}
+          </button>
+          
+        </div>
+        <div class="sources-list">
+          ${msg.sources.map((s, si) => sourceItemHtml(s, si)).join('')}
+        </div>` : '';
+
+      el.innerHTML = `
+        <div class="chat-msg-label">RAGSMITH</div>
+        <div class="bubble">${escHtml(msg.content)}</div>
+        ${evalHtml}
+        ${sourcesHtml}`;
+
+      if (hasScores) {
+        animateConfCard(capturedCardSeq, (msg.grounding_score ?? 0) * 100, (msg.query_relevance ?? 0) * 100);
+      }
+    }
+    container.appendChild(el);
+  });
+  container.scrollTop = container.scrollHeight;
+}
+
+function toggleRetrievalDetails(event) {
+  state.showRetrievalDetails = event.target.checked;
+  renderChat();
+}
+
+function toggleSources(btn) {
+  const list = btn.parentElement.nextElementSibling;
+  list.classList.toggle('open');
+  btn.textContent = btn.textContent.startsWith('▸')
+    ? btn.textContent.replace('▸', '▾')
+    : btn.textContent.replace('▾', '▸');
+}
+
+function appendThinking(id) {
+  const container = document.getElementById('chat-container');
+  document.getElementById('chat-empty').style.display = 'none';
+  const el = document.createElement('div');
+  el.id = id;
+  el.className = 'chat-msg chat-msg-ai thinking';
+  el.innerHTML = `
+    <div class="chat-msg-label">RAGSMITH</div>
+    <div class="thinking-bubble">
+      <div class="dot"></div><div class="dot"></div><div class="dot"></div>
+    </div>`;
+  container.appendChild(el);
+  container.scrollTop = container.scrollHeight;
+}
+
+function removeThinking(id) {
+  document.getElementById(id)?.remove();
+}
+
 // ── Confidence helpers ─────────────────────────────────────────────────────
 function confidenceEmoji(label) {
   return { high: '🟢', medium: '🟡', low: '🔴' }[label] ?? '⚪';
 }
-
 function clamp01(v) { return Math.min(1, Math.max(0, v || 0)); }
 
-// Returns a unique id suffix so bars can be animated after DOM insert
 let _cardSeq = 0;
-
 function confidenceBadgeHtml(label, grounding, relevance) {
   const id    = ++_cardSeq;
   const emoji = confidenceEmoji(label);
   const cls   = `confidence-${label}`;
-  const cardCls = `card-${label}`;
   const gPct  = (clamp01(grounding) * 100).toFixed(1);
   const rPct  = (clamp01(relevance) * 100).toFixed(1);
-
-  // Conic-gradient gauge colour
   const gaugeColour = { high: '#2ed573', medium: '#ffa502', low: '#ff4757' }[label] ?? '#535d6b';
   const gDeg  = Math.round(clamp01(grounding) * 360);
   const gaugeStyle = `background: conic-gradient(${gaugeColour} ${gDeg}deg, #1a1f28 ${gDeg}deg)`;
 
   return `
-    <div class="confidence-card ${cardCls}" id="conf-card-${id}">
+    <div class="confidence-card card-${label}" id="conf-card-${id}">
       <div class="conf-gauge">
         <div class="conf-gauge-ring" style="${gaugeStyle}">
           <span class="conf-gauge-val">${gPct}<span style="font-size:9px">%</span></span>
@@ -378,7 +723,6 @@ function confidenceBadgeHtml(label, grounding, relevance) {
         </div>
       </div>
     </div>`;
-  // Note: bar animation is triggered by animateConfCard(id, gPct, rPct) after DOM insert
 }
 
 function animateConfCard(id, gPct, rPct) {
@@ -403,218 +747,153 @@ function sourceItemHtml(s, i) {
       rankHtml = `<div class="source-rank-change dropped">↓ ${s.original_rank + 1} → ${i + 1}</div>`;
     }
   }
-
+  const scoreDetailsHtml = `
+    <div class="source-scores">
+      <span class="source-score-pill pill-dense">Dense <span>${(s.dense_score || 0).toFixed(3)}</span></span>
+      <span class="source-score-pill pill-bm25">BM25 <span>${(s.bm25_score || 0).toFixed(3)}</span></span>
+      <span class="source-score-pill pill-rrf">RRF <span>${(s.rrf_score || 0).toFixed(5)}</span></span>
+      <span class="source-score-pill pill-rerank">Rerank <span>${(s.rerank_score || 0).toFixed(3)}</span></span>
+    </div>`;
   return `
     <div class="source-item${isTop ? ' top-source' : ''}">
       <span class="source-rank-num">#${i + 1}</span>
       <div class="source-file">📄 ${escHtml(s.doc_filename)}</div>
-      <div class="source-scores">
-        <span class="source-score-pill pill-dense">Dense <span>${(s.dense_score || 0).toFixed(3)}</span></span>
-        <span class="source-score-pill pill-bm25">BM25 <span>${(s.bm25_score || 0).toFixed(3)}</span></span>
-        <span class="source-score-pill pill-rrf">RRF <span>${(s.rrf_score || 0).toFixed(5)}</span></span>
-        <span class="source-score-pill pill-rerank">Rerank <span>${(s.rerank_score || 0).toFixed(3)}</span></span>
-      </div>
+      ${scoreDetailsHtml}
       ${rankHtml}
       <div class="source-preview">${escHtml(s.text.substring(0, 220))}…</div>
     </div>`;
 }
 
-// ── Render Chat ────────────────────────────────────────────────────────────
-function renderChat() {
-  const container = document.getElementById('chat-container');
-  const empty = document.getElementById('chat-empty');
-
-  if (!state.chatHistory.length) {
-    empty.style.display = 'flex';
-    Array.from(container.children)
-      .filter(c => c !== empty && !c.classList.contains('thinking'))
-      .forEach(c => c.remove());
-    return;
-  }
-
-  empty.style.display = 'none';
-  Array.from(container.children)
-    .filter(c => c !== empty && !c.id?.startsWith('thinking'))
-    .forEach(c => c.remove());
-
-  state.chatHistory.forEach((msg, i) => {
-    const el = document.createElement('div');
-    el.className = `chat-msg chat-msg-${msg.role}`;
-    el.dataset.idx = i;
-
-    if (msg.role === 'user') {
-      el.innerHTML = `
-        <div class="chat-msg-label">YOU</div>
-        <div class="bubble">${escHtml(msg.content)}</div>`;
-    } else {
-      // Confidence card (always show when sources exist)
-      const gPct   = (clamp01(msg.grounding_score) * 100).toFixed(1);
-      const rPct   = (clamp01(msg.query_relevance)  * 100).toFixed(1);
-      const evalHtml = msg.sources?.length
-        ? confidenceBadgeHtml(msg.confidence_label ?? 'low', msg.grounding_score ?? 0, msg.query_relevance ?? 0)
-        : '';
-      const capturedCardSeq = _cardSeq; // capture after confidenceBadgeHtml incremented it
-
-      // Sources dropdown
-      const sourcesHtml = msg.sources?.length ? `
-        <button class="sources-toggle" onclick="toggleSources(this)">
-          ▸ ${msg.sources.length} source${msg.sources.length > 1 ? 's' : ''} · ${escHtml(msg.model || '')}
-        </button>
-        <div class="sources-list">
-          ${msg.sources.map((s, si) => sourceItemHtml(s, si)).join('')}
-        </div>` : '';
-
-      el.innerHTML = `
-        <div class="chat-msg-label">RAGSMITH</div>
-        <div class="bubble">${escHtml(msg.content)}</div>
-        ${evalHtml}
-        ${sourcesHtml}`;
-
-      // Trigger bar animation after DOM insert
-      if (msg.sources?.length) {
-        animateConfCard(capturedCardSeq, parseFloat(gPct), parseFloat(rPct));
-      }
-    }
-    container.appendChild(el);
-  });
-
-  container.scrollTop = container.scrollHeight;
-}
-
-function toggleSources(btn) {
-  const list = btn.nextElementSibling;
-  list.classList.toggle('open');
-  btn.textContent = btn.textContent.startsWith('▸')
-    ? btn.textContent.replace('▸', '▾')
-    : btn.textContent.replace('▾', '▸');
-}
-
-function appendThinking(id) {
-  const container = document.getElementById('chat-container');
-  document.getElementById('chat-empty').style.display = 'none';
-  const el = document.createElement('div');
-  el.id = id;
-  el.className = 'chat-msg chat-msg-ai thinking';
-  el.innerHTML = `
-    <div class="chat-msg-label">RAGSMITH</div>
-    <div class="thinking-bubble">
-      <div class="dot"></div><div class="dot"></div><div class="dot"></div>
-    </div>`;
-  container.appendChild(el);
-  container.scrollTop = container.scrollHeight;
-}
-
-function removeThinking(id) {
-  document.getElementById(id)?.remove();
-}
-
-// ── History ────────────────────────────────────────────────────────────────
-async function loadHistory() {
-  if (!state.activeProject) return;
-  try {
-    const logs = await api('GET', `/query/${state.activeProject.id}/history?limit=50`);
-    const list = document.getElementById('history-list');
-    if (!logs.length) {
-      list.innerHTML = `<div class="empty-state"><div class="empty-state-icon">◷</div><p>No queries yet.</p></div>`;
-      return;
-    }
-    const ids = [];
-    list.innerHTML = logs.map((l, idx) => {
-      const label  = l.grounding_score >= 0.75 ? 'high' : l.grounding_score >= 0.50 ? 'medium' : 'low';
-      const emoji  = confidenceEmoji(label);
-      const hasScore = l.grounding_score > 0 || l.query_relevance > 0;
-      const badgeHtml = hasScore
-        ? `<span class="history-confidence confidence-${label}">${emoji} ${(l.grounding_score * 100).toFixed(0)}%</span>`
-        : '';
-      const gPct = (clamp01(l.grounding_score) * 100).toFixed(1);
-      const rPct = (clamp01(l.query_relevance)  * 100).toFixed(1);
-      ids.push({ idx, gPct, rPct });
-      const miniBars = hasScore ? `
-        <div class="history-scores-row">
-          <div class="history-mini-bar">
-            <span class="history-mini-label">Grounding</span>
-            <div class="history-mini-track"><div class="history-mini-fill grounding" id="hg-${idx}" style="width:0%"></div></div>
-            <span class="history-mini-val">${gPct}%</span>
-          </div>
-          <div class="history-mini-bar">
-            <span class="history-mini-label">Relevance</span>
-            <div class="history-mini-track"><div class="history-mini-fill relevance" id="hr-${idx}" style="width:0%"></div></div>
-            <span class="history-mini-val">${rPct}%</span>
-          </div>
-        </div>` : '';
-      return `
-        <div class="history-item">
-          <div class="history-query-row">
-            <div class="history-query">▸ ${escHtml(l.query_text)}</div>
-            ${badgeHtml}
-          </div>
-          ${miniBars}
-          <div class="history-answer">${escHtml(l.response.substring(0, 300))}${l.response.length > 300 ? '…' : ''}</div>
-          <div class="history-meta">${l.created_at.replace('T', ' ').substring(0,16)} · ${l.num_chunks} chunks</div>
-        </div>`;
-    }).join('');
-    // Animate mini bars
-    requestAnimationFrame(() => setTimeout(() => {
-      ids.forEach(({ idx, gPct, rPct }) => {
-        const hg = document.getElementById('hg-' + idx);
-        const hr = document.getElementById('hr-' + idx);
-        if (hg) hg.style.width = gPct + '%';
-        if (hr) hr.style.width = rPct + '%';
-      });
-    }, 60));
-  } catch (e) {
-    toast('Failed to load history: ' + e.message, 'error');
-  }
-}
-
-// ── Modal ──────────────────────────────────────────────────────────────────
-function openModal(id) {
-  document.getElementById(id)?.classList.add('open');
-}
-
-function closeModal(id) {
-  document.getElementById(id)?.classList.remove('open');
-}
-
-function closeModalOutside(e, id) {
-  if (e.target === document.getElementById(id)) closeModal(id);
-}
-
-// ── LLM Status ────────────────────────────────────────────────────────────────
+// ── Settings ───────────────────────────────────────────────────────────────
 async function checkOllama() {
   const el = document.getElementById('ollama-status');
   try {
-    const res = await fetch('/health', { signal: AbortSignal.timeout(5000) });
-    if (res.ok) {
-      const data = await res.json();
-      const provider = (data.llm_provider || 'llm').toUpperCase();
-      if (data.llm_available) {
-        el.innerHTML = `<span class="status-dot running"></span> ${provider} running`;
-      } else {
-        el.innerHTML = `<span class="status-dot stopped"></span> ${provider} offline`;
-        el.title = data.llm_detail || '';
-      }
+    const res = await fetch('/health');
+    const data = await res.json();
+    const provider = (data.llm_provider || 'LLM').toUpperCase();
+    if (data.llm_available) {
+      el.innerHTML = `<span class="status-dot running"></span> ${provider} running`;
     } else {
-      throw new Error();
+      el.innerHTML = `<span class="status-dot stopped"></span> ${provider} offline`;
     }
   } catch {
     el.innerHTML = '<span class="status-dot stopped"></span> LLM offline';
   }
 }
 
+async function loadSettingsModal() {
+  try {
+    const keyStatus = await api('GET', '/settings/groq/key-status');
+    const keyInput = document.getElementById('groq-api-key');
+    if (keyStatus.configured) keyInput.placeholder = '••••••••••••••••••••••••';
+    
+    const groqModels = state.availableModels.groq || [];
+    const ollamaModels = state.availableModels.ollama || [];
+
+    const groqModelsList = document.getElementById('groq-models-list');
+    const ollamaModelsList = document.getElementById('ollama-models-list');
+
+    groqModelsList.innerHTML = '';
+    if (groqModels.length) {
+      groqModels.forEach(m => groqModelsList.innerHTML += `<div class="model-item">${escHtml(m)}</div>`);
+    } else {
+      groqModelsList.innerHTML = '<p style="opacity:.6;">No Groq models available</p>';
+    }
+
+    ollamaModelsList.innerHTML = '';
+    if (ollamaModels.length) {
+      ollamaModels.forEach(m => ollamaModelsList.innerHTML += `<div class="model-item">${escHtml(m)}</div>`);
+    } else {
+      ollamaModelsList.innerHTML = '<p style="opacity:.6;">No Ollama models available</p>';
+    }
+    
+    const settings = await api('GET', '/settings/');
+    document.getElementById('llm-provider-info').textContent = settings.llm_provider.toUpperCase();
+    document.getElementById('active-model-info').textContent = state.activeProject?.model || settings.available_models[0] || 'Not set'; // This part might need further refinement based on actual setting structure
+  } catch (e) { console.error('Settings load failed', e); }
+}
+
+async function testGroqKey() {
+  const apiKey = document.getElementById('groq-api-key').value.trim();
+  if (!apiKey) { toast('Enter a Groq API key.', 'warn'); return; }
+  const btn = event.target;
+  btn.disabled = true; btn.textContent = 'Testing...';
+  try {
+    const res = await api('POST', '/settings/groq/validate', { api_key: apiKey });
+    toast(res.valid ? 'Valid key!' : 'Invalid key: ' + res.message, res.valid ? 'success' : 'error');
+  } catch (e) { toast(e.message, 'error'); }
+  finally { btn.disabled = false; btn.textContent = 'Test Key'; }
+}
+
+async function saveGroqSettings() {
+  const apiKey = document.getElementById('groq-api-key').value.trim();
+  if (!apiKey) { toast('Enter a Groq API key.', 'warn'); return; }
+  const btn = event.target;
+  btn.disabled = true; btn.textContent = 'Saving...';
+  try {
+    await api('POST', '/settings/groq/save', { api_key: apiKey });
+    toast('Settings saved', 'success');
+    closeModal('modal-app-settings');
+    const models = await api('GET', '/settings/models');
+    state.availableModels = models.models || [];
+  } catch (e) { toast(e.message, 'error'); }
+  finally { btn.disabled = false; btn.textContent = 'Save Settings'; }
+}
+
 // ── Utils ──────────────────────────────────────────────────────────────────
 function escHtml(str) {
   if (!str) return '';
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
+function openModal(id) {
+  document.getElementById(id)?.classList.add('open');
+  if (id === 'modal-app-settings') loadSettingsModal();
+}
+function closeModal(id) { document.getElementById(id)?.classList.remove('open'); }
+function closeModalOutside(e, id) { if (e.target === document.getElementById(id)) closeModal(id); }
 
 // ── Init ───────────────────────────────────────────────────────────────────
 (async function init() {
   await loadProjects();
   await checkOllama();
-  setInterval(checkOllama, 30_000);
+  setInterval(checkOllama, 30000);
+  
+  // Load models for both providers
+  await loadAvailableModels('groq');
+  await loadAvailableModels('ollama');
+  
+  // Initialize project creation modal with default provider
+  updateProjectModels('groq'); 
 })();
+
+async function loadAvailableModels(provider) {
+  try {
+    const models = await api('GET', `/settings/models?provider=${provider}`);
+    state.availableModels[provider] = models.models || [];
+  } catch (e) {
+    console.error(`Failed to load ${provider} models:`, e);
+    state.availableModels[provider] = [`${provider} models unavailable`];
+  }
+}
+
+function updateProjectModels(provider) {
+  const modelSelect = document.getElementById('new-project-model');
+  modelSelect.innerHTML = '';
+  const models = state.availableModels[provider] || [];
+  if (models.length === 0) {
+    modelSelect.innerHTML = '<option value="">No models available</option>';
+    modelSelect.disabled = true;
+    return;
+  }
+  modelSelect.disabled = false;
+  models.forEach(m => {
+    const opt = document.createElement('option');
+    opt.value = m;
+    opt.textContent = m;
+    modelSelect.appendChild(opt);
+  });
+  // Pre-select a default if available
+  if (models.length > 0) {
+    modelSelect.value = models[0];
+  }
+}

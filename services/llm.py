@@ -24,11 +24,10 @@ SYSTEM_PROMPT = (
     "Do not hallucinate or invent facts. Be concise and accurate.\n"
 )
 
-GROQ_API_URL   = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODELS_URL = "https://api.groq.com/openai/v1/models"
 
-# requests is already in requirements.txt (pulled in by sentence-transformers/huggingface)
-# It has proper TLS + User-Agent headers that pass Cloudflare — urllib doesn't.
+
 def _requests():
     try:
         import requests
@@ -43,85 +42,131 @@ def generate_answer(
     query: str,
     context_chunks: List[Tuple[str, float, str]],
     model: str = "",
+    history: List[Tuple[str, str]] = None,  # List of (query, response)
 ) -> str:
-    """Generate a RAG-grounded answer. model overrides config default if given."""
     from config import get_settings
+
     cfg = get_settings()
     effective_model = model or cfg.effective_llm_model
+
     if cfg.llm_provider == "groq":
-        return _groq_generate(query, context_chunks, effective_model, cfg.groq_api_key)
-    return _ollama_generate(query, context_chunks, effective_model, cfg.ollama_base_url)
+        return _groq_generate(query, context_chunks, effective_model, cfg.groq_api_key, history)
+
+    return _ollama_generate(query, context_chunks, effective_model, cfg.ollama_base_url, history)
 
 
 def check_llm_available() -> dict:
-    """Return availability status for the /health endpoint status indicator."""
     from config import get_settings
+
     cfg = get_settings()
+
     if cfg.llm_provider == "groq":
-        ok = _check_groq(cfg.groq_api_key)
-        return {"available": ok, "provider": "groq",
-                "detail": "Groq API reachable" if ok else "Groq API unreachable or invalid key"}
-    ok = _check_ollama(cfg.ollama_base_url)
-    return {"available": ok, "provider": "ollama",
-            "detail": f"Ollama at {cfg.ollama_base_url}" if ok else "Ollama not running"}
+        try:
+            ok = _check_groq(cfg.groq_api_key)
+            return {
+                "available": ok,
+                "provider": "groq",
+                "detail": "Groq API reachable" if ok else "Groq API unreachable or invalid key",
+            }
+        except LLMError as exc:
+            logger.error("Groq LLM check failed: %s", exc)
+            return {"available": False, "provider": "groq", "detail": str(exc)}
+
+    try:
+        ok = _check_ollama(cfg.ollama_base_url)
+        return {
+            "available": ok,
+            "provider": "ollama",
+            "detail": f"Ollama at {cfg.ollama_base_url}" if ok else "Ollama not running",
+        }
+    except Exception as exc:
+        logger.error("Ollama LLM check failed: %s", exc)
+        return {"available": False, "provider": "ollama", "detail": str(exc)}
 
 
 def list_available_models() -> List[str]:
     from config import get_settings
+
     cfg = get_settings()
+
     if cfg.llm_provider == "groq":
         return _groq_list_models(cfg.groq_api_key)
+
     return _ollama_list_models(cfg.ollama_base_url)
 
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
 
-def _build_user_message(query: str, context_chunks: List[Tuple[str, float, str]]) -> str:
+def _build_messages(
+    query: str,
+    context_chunks: List[Tuple[str, float, str]],
+    history: List[Tuple[str, str]] = None
+) -> List[dict]:
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+    if history:
+        for q, a in history:
+            messages.append({"role": "user", "content": q})
+            messages.append({"role": "assistant", "content": a})
+
     if context_chunks:
-        parts = [f"[Source {i}: {fn} | relevance: {s:.3f}]\n{t}"
-                 for i, (t, s, fn) in enumerate(context_chunks, 1)]
+        parts = [
+            f"[Source {i}: {fn} | relevance: {s:.3f}]\n{t}"
+            for i, (t, s, fn) in enumerate(context_chunks, 1)
+        ]
         ctx = "\n\n---\n\n".join(parts)
     else:
         ctx = "No relevant context found."
-    return f"CONTEXT:\n{ctx}\n\nQUESTION: {query}\n\nANSWER:"
+
+    user_content = f"CONTEXT:\n{ctx}\n\nQUESTION: {query}\n\nANSWER:"
+    messages.append({"role": "user", "content": user_content})
+
+    return messages
 
 
-# ── Ollama (urllib is fine — local, no Cloudflare) ────────────────────────────
+# ── Ollama ───────────────────────────────────────────────────────────────────
 
-def _ollama_generate(query, context_chunks, model, base_url):
+def _ollama_generate(query, context_chunks, model, base_url, history=None):
     payload = json.dumps({
         "model": model,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user",   "content": _build_user_message(query, context_chunks)},
-        ],
+        "messages": _build_messages(query, context_chunks, history),
         "stream": True,
         "options": {"temperature": 0.2, "top_p": 0.9, "num_ctx": 4096},
     }).encode()
 
     req = urllib.request.Request(
-        f"{base_url}/api/chat", data=payload,
-        headers={"Content-Type": "application/json"}, method="POST",
+        f"{base_url}/api/chat",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
     )
+
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             parts = []
             for line in resp.read().decode().splitlines():
                 if not line.strip():
                     continue
-                try:
-                    obj = json.loads(line)
-                    parts.append(obj.get("message", {}).get("content", ""))
-                    if obj.get("done"):
-                        break
-                except json.JSONDecodeError:
-                    continue
-            return "".join(parts).strip() or "Ollama returned an empty response."
+                obj = _try_json_parse(line)
+                parts.append(obj.get("message", {}).get("content", ""))
+                if obj.get("done"):
+                    break
+
+            response_text = "".join(parts).strip()
+
+            if not response_text:
+                logger.warning("Ollama returned empty response for model %s", model)
+                return "Ollama returned an empty response."
+
+            return response_text
+
     except urllib.error.URLError as exc:
-        raise ConnectionError(
-            f"Cannot reach Ollama at {base_url}. "
-            "Ensure Ollama is running: https://ollama.com"
-        ) from exc
+        logger.error("Cannot reach Ollama at %s: %s", base_url, exc)
+        raise LLMError(f"Cannot reach Ollama at {base_url}. Ensure it is running.") from exc
+
+    except Exception as exc:
+        logger.error("Unexpected Ollama error: %s", exc)
+        raise LLMError(f"Ollama error: {exc}") from exc
 
 
 def _check_ollama(base_url: str) -> bool:
@@ -135,12 +180,13 @@ def _check_ollama(base_url: str) -> bool:
 def _ollama_list_models(base_url: str) -> List[str]:
     try:
         with urllib.request.urlopen(f"{base_url}/api/tags", timeout=10) as r:
-            return [m["name"] for m in json.loads(r.read()).get("models", [])]
-    except Exception:
-        return []
+            data = _try_json_parse(r.read().decode())
+            return [m["name"] for m in data.get("models", [])]
+    except Exception as exc:
+        raise LLMError(f"Ollama error: {exc}") from exc
 
 
-# ── Groq (requests — passes Cloudflare, urllib gets 403/1010) ────────────────
+# ── Groq ─────────────────────────────────────────────────────────────────────
 
 def _groq_headers(api_key: str) -> dict:
     return {
@@ -149,22 +195,29 @@ def _groq_headers(api_key: str) -> dict:
     }
 
 
-def _groq_generate(query, context_chunks, model, api_key):
+class LLMError(Exception):
+    pass
+
+
+def _try_json_parse(text: str) -> dict:
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        logger.warning("JSON decode failed")
+        return {}
+
+
+def _groq_generate(query, context_chunks, model, api_key, history=None):
     if not api_key:
-        raise RuntimeError(
-            "GROQ_API_KEY is not set. Get a free key at https://console.groq.com"
-        )
+        raise LLMError("Groq API key is not set.")
 
     requests = _requests()
+
     payload = {
         "model": model,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user",   "content": _build_user_message(query, context_chunks)},
-        ],
+        "messages": _build_messages(query, context_chunks, history),
         "temperature": 0.2,
         "max_tokens": 1024,
-        "stream": False,
     }
 
     try:
@@ -174,52 +227,46 @@ def _groq_generate(query, context_chunks, model, api_key):
             json=payload,
             timeout=60,
         )
+
         resp.raise_for_status()
         result = resp.json()
-        logger.info("Groq: model=%s tokens=%s",
-                    result.get("model", model),
-                    result.get("usage", {}).get("total_tokens", "?"))
+
         return result["choices"][0]["message"]["content"].strip()
 
     except requests.exceptions.HTTPError as exc:
-        body = exc.response.text if exc.response is not None else str(exc)
-        raise RuntimeError(f"Groq API error {exc.response.status_code}: {body}") from exc
+        raise LLMError(f"Groq HTTP error: {exc}") from exc
+
     except requests.exceptions.ConnectionError as exc:
-        raise ConnectionError(f"Cannot reach Groq API: {exc}") from exc
+        raise LLMError(f"Groq connection error: {exc}") from exc
+
     except requests.exceptions.Timeout as exc:
-        raise ConnectionError("Groq API request timed out after 60s") from exc
+        raise LLMError("Groq timeout") from exc
+
+    except Exception as exc:
+        raise LLMError(f"Groq unexpected error: {exc}") from exc
 
 
 def _check_groq(api_key: str) -> bool:
-    """
-    Ping Groq /models to verify key + connectivity.
-    Only used for /health indicator — does NOT gate queries.
-    """
     if not api_key:
-        return False
+        raise LLMError("Groq API key not set")
+
     requests = _requests()
-    try:
-        resp = requests.get(
-            GROQ_MODELS_URL,
-            headers=_groq_headers(api_key),
-            timeout=10,
-        )
-        return resp.status_code == 200
-    except Exception:
-        return False
+    resp = requests.get(GROQ_MODELS_URL, headers=_groq_headers(api_key), timeout=10)
+
+    if resp.status_code == 200:
+        return True
+
+    if resp.status_code == 401:
+        raise LLMError("Invalid Groq API key")
+
+    return False
 
 
 def _groq_list_models(api_key: str) -> List[str]:
-    if not api_key:
-        return []
     requests = _requests()
-    try:
-        resp = requests.get(
-            GROQ_MODELS_URL,
-            headers=_groq_headers(api_key),
-            timeout=10,
-        )
-        resp.raise_for_status()
-        return [m["id"] for m in resp.json().get("data", [])]
-    except Exception:
-        return []
+
+    resp = requests.get(GROQ_MODELS_URL, headers=_groq_headers(api_key), timeout=10)
+    resp.raise_for_status()
+
+    data = resp.json()
+    return [m["id"] for m in data.get("data", [])]

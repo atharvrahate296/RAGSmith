@@ -1,175 +1,230 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description"
-    content="RAGSmith — Open-source RAG builder with hybrid search, cross-encoder re-ranking, and confidence scoring. Build and evaluate your knowledge base AI." />
-  <title>RAGSmith — Open-Source RAG Builder</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="stylesheet"
-    href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Syne:wght@400;600;800&display=swap" />
-  <link rel="stylesheet" href="/static/css/main.css" />
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="description" content="RAGSmith — Open-source RAG builder with hybrid search, cross-encoder re-ranking, and confidence scoring. Build and evaluate your knowledge base AI." />
+<title>RAGSmith — Open-Source RAG Builder</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Syne:wght@400;600;800&display=swap" />
+<link rel="stylesheet" href="/static/css/main.css" />
 </head>
-
 <body>
 
-  <!-- ── Sidebar ──────────────────────────────────────────────────────── -->
-  <aside class="sidebar" id="sidebar">
-    <div class="sidebar-brand">
-      <span class="brand-icon">⬡</span>
-      <div>
-        <div class="brand-name">RAGSmith</div>
-        <div class="brand-sub">v2.0 · Hybrid + Re-rank</div>
-      </div>
-    </div>
-
-    <nav class="sidebar-nav">
-      <button class="nav-btn active" data-view="projects" onclick="showView('projects')">
-        <span class="nav-icon">◈</span> Projects
-      </button>
-      <button class="nav-btn" data-view="documents" onclick="showView('documents')" id="nav-documents" disabled>
-        <span class="nav-icon">◉</span> Documents
-      </button>
-      <button class="nav-btn" data-view="query" onclick="showView('query')" id="nav-query" disabled>
-        <span class="nav-icon">◎</span> Query
-      </button>
-      <button class="nav-btn" data-view="history" onclick="showView('history')" id="nav-history" disabled>
-        <span class="nav-icon">◷</span> History
-      </button>
-    </nav>
-
-    <div class="sidebar-project-label" id="active-project-label">
-      No project selected
-    </div>
-
-    <div class="sidebar-footer">
-      <div class="ollama-status" id="ollama-status">
-        <span class="status-dot"></span> Checking Ollama…
-      </div>
-      <a href="/docs" class="docs-link" target="_blank">API Docs ↗</a>
-    </div>
-  </aside>
-
-  <!-- ── Main ────────────────────────────────────────────────────────── -->
-  <main class="main">
-
-    <!-- Projects View -->
-    <section class="view active" id="view-projects">
-      <div class="view-header">
-        <h1>Projects</h1>
-        <button class="btn btn-primary" onclick="openModal('modal-new-project')">+ New Project</button>
-      </div>
-      <div class="projects-grid" id="projects-grid">
-        <div class="skeleton-grid">
-          <div class="skeleton"></div>
-          <div class="skeleton"></div>
-          <div class="skeleton"></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Documents View -->
-    <section class="view" id="view-documents">
-      <div class="view-header">
-        <h1>Documents <span class="view-subtitle" id="doc-project-name"></span></h1>
-        <label class="btn btn-primary" for="file-upload-input">↑ Upload File</label>
-        <input type="file" id="file-upload-input" style="display:none" accept=".pdf,.txt,.md,.docx,.doc,.rst,.csv"
-          onchange="uploadDocument(this)" />
-      </div>
-      <div class="upload-hint">Accepted: PDF · TXT · MD · DOCX · RST · CSV (max 50 MB)</div>
-      <div class="doc-list" id="doc-list"></div>
-    </section>
-
-    <!-- Query View -->
-    <section class="view" id="view-query">
-      <div class="view-header">
-        <h1>Query <span class="view-subtitle" id="query-project-name"></span></h1>
-      </div>
-      <div class="pipeline-indicator" id="pipeline-indicator">
-        <div class="pipeline-stage" id="ps-hybrid">⬡ Hybrid Search</div>
-        <div class="pipeline-arrow"></div>
-        <div class="pipeline-stage" id="ps-rerank">◈ Re-rank</div>
-        <div class="pipeline-arrow"></div>
-        <div class="pipeline-stage" id="ps-eval">◎ Grounded Gen</div>
-      </div>
-
-      <div class="chat-container" id="chat-container">
-        <div class="chat-empty" id="chat-empty">
-          <div class="chat-empty-icon">◎</div>
-          <p>Ask anything about your documents.</p>
-        </div>
-      </div>
-
-      <div class="query-input-area">
-        <textarea id="query-input" rows="2" placeholder="Ask a question about your knowledge base…"
-          onkeydown="handleQueryKey(event)"></textarea>
-        <button class="btn btn-send" id="query-send-btn" onclick="sendQuery()">Send ↵</button>
-      </div>
-      <div class="query-hint">Enter to send · Shift+Enter for newline</div>
-    </section>
-
-    <!-- History View -->
-    <section class="view" id="view-history">
-      <div class="view-header">
-        <h1>Query History <span class="view-subtitle" id="history-project-name"></span></h1>
-        <button class="btn btn-ghost" onclick="loadHistory()">↺ Refresh</button>
-      </div>
-      <div class="history-list" id="history-list"></div>
-    </section>
-
-  </main>
-
-  <!-- ── Modals ──────────────────────────────────────────────────────── -->
-
-  <!-- New Project Modal -->
-  <div class="modal-overlay" id="modal-new-project" onclick="closeModalOutside(event, 'modal-new-project')">
-    <div class="modal">
-      <div class="modal-header">
-        <h2>New Project</h2>
-        <button class="modal-close" onclick="closeModal('modal-new-project')">✕</button>
-      </div>
-      <div class="modal-body">
-        <label class="field-label">Project Name <span class="required">*</span></label>
-        <input type="text" id="new-project-name" class="field-input" placeholder="my-knowledge-base" maxlength="100" />
-
-        <label class="field-label">Description</label>
-        <input type="text" id="new-project-desc" class="field-input" placeholder="Optional description"
-          maxlength="500" />
-
-        <label class="field-label">LLM Model</label>
-        <select id="new-project-model" class="field-input">
-          <optgroup label="Groq (cloud)">
-            <option value="llama-3.1-8b-instant" selected>llama-3.1-8b-instant (recommended)</option>
-            <option value="llama-3.3-70b-versatile">llama-3.3-70b-versatile (smarter, slower)</option>
-            <option value="llama3-8b-8192">llama3-8b-8192</option>
-            <option value="llama3-70b-8192">llama3-70b-8192</option>
-            <option value="mixtral-8x7b-32768">mixtral-8x7b-32768</option>
-            <option value="gemma2-9b-it">gemma2-9b-it</option>
-          </optgroup>
-          <optgroup label="Ollama (local)">
-            <option value="mistral">mistral</option>
-            <option value="llama3">llama3</option>
-            <option value="phi3">phi3</option>
-            <option value="gemma">gemma</option>
-          </optgroup>
-        </select>
-
-        <label class="field-label">Top-K Chunks</label>
-        <input type="number" id="new-project-topk" class="field-input" value="5" min="1" max="20" />
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost" onclick="closeModal('modal-new-project')">Cancel</button>
-        <button class="btn btn-primary" onclick="createProject()">Create Project</button>
-      </div>
+<!-- ── Sidebar ──────────────────────────────────────────────────────── -->
+<aside class="sidebar" id="sidebar">
+  <div class="sidebar-brand">
+    <span class="brand-icon">⬡</span>
+    <div>
+      <div class="brand-name">RAGSmith</div>
+      <div class="brand-sub">v2.0 · Hybrid + Re-rank</div>
     </div>
   </div>
 
-  <!-- Toast -->
-  <div class="toast" id="toast"></div>
+  <nav class="sidebar-nav">
+    <button class="nav-btn active" data-view="projects" onclick="showView('projects')">
+      <span class="nav-icon">◈</span> Projects
+    </button>
+    <button class="nav-btn" data-view="documents" onclick="showView('documents')" id="nav-documents" disabled>
+      <span class="nav-icon">◉</span> Documents
+    </button>
+    <button class="nav-btn" data-view="query" onclick="showView('query')" id="nav-query" disabled>
+      <span class="nav-icon">◎</span> Query
+    </button>
+  </nav>
 
-  <script src="/static/js/main.js"></script>
+  <div class="sidebar-divider"></div>
+
+  <div class="sidebar-chats-header">
+    <span class="sidebar-chats-label" id="active-project-label">Chats</span>
+    <button class="btn-new-chat" id="new-chat-btn" disabled onclick="newChat()">＋ New</button>
+  </div>
+
+  <div class="sidebar-chats-list" id="chat-sessions-list">
+    <div class="empty-state" style="padding:15px; font-size:13px; opacity:.6; text-align:center;">
+      No chat sessions yet.
+    </div>
+  </div>
+
+  <div class="sidebar-footer">
+    <button class="btn-icon" title="Settings" onclick="openModal('modal-app-settings')">⚙</button>
+    <div class="ollama-status" id="ollama-status">
+      <span class="status-dot"></span> Checking LLM…
+    </div>
+  </div>
+</aside>
+
+<!-- ── Main ────────────────────────────────────────────────────────── -->
+<main class="main">
+
+  <!-- Projects View -->
+  <section class="view active" id="view-projects">
+    <div class="view-header">
+      <h1>Projects</h1>
+      <button class="btn btn-primary" onclick="openModal('modal-new-project')">+ New Project</button>
+    </div>
+    <div class="projects-grid" id="projects-grid">
+      <div class="skeleton-grid">
+        <div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Documents View -->
+  <section class="view" id="view-documents">
+    <div class="view-header">
+      <h1>Documents <span class="view-subtitle" id="doc-project-name"></span></h1>
+      <label class="btn btn-primary" for="file-upload-input">↑ Upload File</label>
+      <input type="file" id="file-upload-input" style="display:none"
+             accept=".pdf,.txt,.md,.docx,.doc,.rst,.csv"
+             onchange="uploadDocument(this)" />
+    </div>
+    <div class="upload-hint">Accepted: PDF · TXT · MD · DOCX · RST · CSV (max 50 MB)</div>
+    <div class="doc-list" id="doc-list"></div>
+  </section>
+
+  <!-- Query View -->
+  <section class="view" id="view-query">
+    <div class="view-header">
+      <h1>Query <span class="view-subtitle" id="query-project-name"></span></h1>
+    </div>
+    <div class="pipeline-indicator" id="pipeline-indicator">
+      <div class="pipeline-stage" id="ps-hybrid">⬡ Hybrid Search</div>
+      <div class="pipeline-arrow"></div>
+      <div class="pipeline-stage" id="ps-rerank">◈ Re-rank</div>
+      <div class="pipeline-arrow"></div>
+      <div class="pipeline-stage" id="ps-eval">◎ Grounded Gen</div>
+    </div>
+
+    <div class="chat-container" id="chat-container">
+      <div class="chat-empty" id="chat-empty">
+        <div class="chat-empty-icon">◎</div>
+        <p>Ask anything about your documents.</p>
+      </div>
+    </div>
+
+    <div class="query-input-area">
+      <textarea id="query-input" rows="2"
+        placeholder="Ask a question about your knowledge base…"
+        onkeydown="handleQueryKey(event)"></textarea>
+      <button class="btn btn-send" id="query-send-btn" onclick="sendQuery()">Send ↵</button>
+    </div>
+    <div class="query-hint">Enter to send · Shift+Enter for newline</div>
+  </section>
+
+  </section>
+
+</main>
+
+<!-- ── Modals ──────────────────────────────────────────────────────── -->
+
+<!-- New Project Modal -->
+<div class="modal-overlay" id="modal-new-project" onclick="closeModalOutside(event, 'modal-new-project')">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>New Project</h2>
+      <button class="modal-close" onclick="closeModal('modal-new-project')">✕</button>
+    </div>
+    <div class="modal-body">
+      <label class="field-label">Project Name <span class="required">*</span></label>
+      <input type="text" id="new-project-name" class="field-input" placeholder="my-knowledge-base" maxlength="100" />
+
+      <label class="field-label">Description</label>
+      <input type="text" id="new-project-desc" class="field-input" placeholder="Optional description" maxlength="500" />
+
+      <label class="field-label">LLM Provider</label>
+      <div class="provider-toggle">
+        <label>
+          <input type="radio" name="project-provider" value="groq" checked onchange="updateProjectModels('groq')">
+          <span>Groq</span>
+        </label>
+        <label>
+          <input type="radio" name="project-provider" value="ollama" onchange="updateProjectModels('ollama')">
+          <span>Ollama</span>
+        </label>
+      </div>
+
+      <label class="field-label">LLM Model</label>
+      <select id="new-project-model" class="field-input"></select>
+
+      <label class="field-label">Top-K Chunks</label>
+      <input type="number" id="new-project-topk" class="field-input" value="5" min="1" max="20" />
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('modal-new-project')">Cancel</button>
+      <button class="btn btn-primary" onclick="createProject()">Create Project</button>
+    </div>
+  </div>
+</div>
+
+<!-- Chat Settings Modal -->
+<div class="modal-overlay" id="modal-chat-settings" onclick="closeModalOutside(event, 'modal-chat-settings')">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Chat Session Settings</h2>
+      <button class="modal-close" onclick="closeModal('modal-chat-settings')">✕</button>
+    </div>
+    <div class="modal-body">
+      <label class="field-label">Session Name <span class="required">*</span></label>
+      <input type="text" id="chat-settings-name" class="field-input" placeholder="My Chat Session" maxlength="100" />
+
+      <label class="field-label">LLM Model</label>
+      <select id="chat-settings-model" class="field-input"></select>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('modal-chat-settings')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveChatSettings()">Save Changes</button>
+    </div>
+  </div>
+</div>
+
+<!-- App Settings Modal -->
+<div class="modal-overlay" id="modal-app-settings" onclick="closeModalOutside(event, 'modal-app-settings')">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Application Settings</h2>
+      <button class="modal-close" onclick="closeModal('modal-app-settings')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="settings-section">
+        <h3>Groq API Configuration</h3>
+        <p class="field-help">Configure your Groq API key for cloud-based LLM inference.</p>
+        
+        <label class="field-label">Groq API Key</label>
+        <div class="field-input-group">
+          <input type="password" id="groq-api-key" class="field-input" placeholder="Enter your Groq API key" />
+          <button class="btn btn-small" onclick="testGroqKey()">Test Key</button>
+        </div>
+        <div id="groq-test-result" style="margin-top:10px; display:none;"></div>
+        
+        <label class="field-label" style="margin-top:15px;">Available Models</label>
+        <div id="groq-models-list" class="models-list">
+          <p style="opacity:.6;">Loading models...</p>
+        </div>
+      </div>
+
+      <div class="settings-section" style="margin-top:30px; padding-top:20px; border-top:1px solid #444;">
+        <h3>System Information</h3>
+        <div class="info-field">
+          <span class="info-label">LLM Provider:</span>
+          <span class="info-value" id="llm-provider-info">-</span>
+        </div>
+        <div class="info-field">
+          <span class="info-label">Active Model:</span>
+          <span class="info-value" id="active-model-info">-</span>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" onclick="saveGroqSettings()">Save Settings</button>
+      <button class="btn btn-ghost" onclick="closeModal('modal-app-settings')">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script src="/static/js/main.js"></script>
 </body>
-
 </html>

@@ -37,7 +37,7 @@ def _standalone_app_py(project_name: str, model: str, top_k: int) -> str:
         Run with:
             pip install -r requirements.txt
             python app.py
-        Then open http://localhost:9000
+        Then open http://localhost:8000
         """
 
         import os, pickle, json, urllib.request, urllib.error
@@ -172,7 +172,7 @@ def _readme_md(project_name: str, model: str) -> str:
         pip install -r requirements.txt
         python app.py
         ```
-        Then open http://localhost:9000 in your browser.
+        Then open http://localhost:8000 in your browser.
 
         ## Files
         | File | Purpose |

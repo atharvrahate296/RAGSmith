@@ -92,13 +92,13 @@ else:
             results.append(("groq_key", True))
 
             # Test 2: Actual completion
-            print("  → Testing completion (llama-3.1-8b-instant)…")
+            print("  → Testing completion (gemma:2b)…")            
             resp2 = requests.post(
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers={"Authorization": f"Bearer {GROQ_KEY}",
                          "Content-Type": "application/json"},
                 json={
-                    "model": "llama-3.1-8b-instant",
+                    "model": "gemma:2b",
                     "messages": [{"role": "user", "content": "Reply with exactly: RAGSMITH_OK"}],
                     "max_tokens": 20,
                     "temperature": 0,
@@ -173,7 +173,7 @@ if DB_DRIVER == "postgres":
             print(f"  ✗  PostgreSQL connection failed: {e}")
             results.append(("db", False))
 else:
-    print(f"  ✓  SQLite — no setup needed (will create data/ragsmith.db on first run)")
+    print(f"  ✓  SQLite — no setup needed (will create data/ragsmith22.db on first run)")
     results.append(("db", True))
 print()
 

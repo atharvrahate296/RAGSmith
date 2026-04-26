@@ -26,11 +26,11 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     # ── Database ──────────────────────────────────────────────────────────────
-    # "sqlite"   → uses local file at data/ragsmith.db  (default, no setup needed)
+    # "sqlite"   → uses local file at data/ragsmith22.db  (default, no setup needed)
     # "postgres" → uses DATABASE_URL (required on AWS)
     db_driver: Literal["sqlite", "postgres"] = "sqlite"
     database_url: str = ""          # e.g. postgresql://user:pass@host:5432/ragsmith
-    sqlite_path: str = "data/ragsmith.db"
+    sqlite_path: str = "data/ragsmith22.db"
 
     # ── LLM Provider ─────────────────────────────────────────────────────────
     # "ollama" → local Ollama instance (default for local dev)
@@ -39,11 +39,13 @@ class Settings(BaseSettings):
 
     # Ollama settings
     ollama_base_url: str = "http://localhost:11434"
-    ollama_default_model: str = "mistral"
+    ollama_default_model: str = "mistral:7b"      # Exact model name from Ollama
+    ollama_available_models: str = "mistral:7b,gemma:2b,llama2:7b,neural-chat:7b"  # Comma-separated list
 
     # Groq settings
     groq_api_key: str = ""
-    groq_default_model: str = "llama-3.1-8b-instant"   # Apache 2.0 / Meta open-weight
+    groq_default_model: str = "mixtral-8x7b-32768"  # Exact Groq model name
+    groq_available_models: str = "mixtral-8x7b-32768,llama2-70b-4096,gemma-7b-it"  # Comma-separated list
 
     # ── Embedding model ───────────────────────────────────────────────────────
     # Always a local SentenceTransformer — never changes between environments

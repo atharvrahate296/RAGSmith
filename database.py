@@ -10,7 +10,7 @@ Postgres → uses psycopg2,        placeholder: %s
 import logging
 from pathlib import Path
 
-logger = logging.getLogger("ragsmith.db")
+logger = logging.getLogger("ragsmith22.db")
 
 
 # ── Connection factory ────────────────────────────────────────────────────────
@@ -123,7 +123,8 @@ CREATE TABLE IF NOT EXISTS projects (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     name        TEXT    NOT NULL UNIQUE,
     description TEXT    DEFAULT '',
-    model       TEXT    DEFAULT 'llama-3.1-8b-instant',
+    provider    TEXT    DEFAULT 'ollama',
+    model       TEXT    DEFAULT 'mistral:7b',
     top_k       INTEGER DEFAULT 5,
     created_at  TEXT    DEFAULT (datetime('now')),
     updated_at  TEXT    DEFAULT (datetime('now'))
@@ -138,15 +139,31 @@ CREATE TABLE IF NOT EXISTS documents (
     error_msg   TEXT    DEFAULT NULL,
     created_at  TEXT    DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name        TEXT    NOT NULL,
+    provider    TEXT    DEFAULT NULL,
+    model       TEXT    DEFAULT NULL,
+    created_at  TEXT    DEFAULT (datetime('now')),
+    updated_at  TEXT    DEFAULT (datetime('now'))
+);
 CREATE TABLE IF NOT EXISTS query_logs (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    session_id      INTEGER REFERENCES chat_sessions(id) ON DELETE CASCADE,
     query_text      TEXT    NOT NULL,
     response        TEXT    NOT NULL,
+    model           TEXT,
     num_chunks      INTEGER DEFAULT 0,
     grounding_score REAL    DEFAULT 0,
     query_relevance REAL    DEFAULT 0,
     created_at      TEXT    DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS app_settings (
+    key             TEXT    PRIMARY KEY,
+    value           TEXT    NOT NULL,
+    updated_at      TEXT    DEFAULT (datetime('now'))
 );
 """
 
@@ -155,7 +172,8 @@ CREATE TABLE IF NOT EXISTS projects (
     id          SERIAL PRIMARY KEY,
     name        TEXT    NOT NULL UNIQUE,
     description TEXT    DEFAULT '',
-    model       TEXT    DEFAULT 'llama-3.1-8b-instant',
+    provider    TEXT    DEFAULT 'ollama',
+    model       TEXT    DEFAULT 'mistral:7b',
     top_k       INTEGER DEFAULT 5,
     created_at  TIMESTAMPTZ DEFAULT NOW(),
     updated_at  TIMESTAMPTZ DEFAULT NOW()
@@ -170,15 +188,31 @@ CREATE TABLE IF NOT EXISTS documents (
     error_msg   TEXT    DEFAULT NULL,
     created_at  TIMESTAMPTZ DEFAULT NOW()
 );
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    id          SERIAL PRIMARY KEY,
+    project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name        TEXT    NOT NULL,
+    provider    TEXT    DEFAULT NULL,
+    model       TEXT    DEFAULT NULL,
+    created_at  TIMESTAMPTZ DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ DEFAULT NOW()
+);
 CREATE TABLE IF NOT EXISTS query_logs (
     id              SERIAL PRIMARY KEY,
     project_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    session_id      INTEGER REFERENCES chat_sessions(id) ON DELETE CASCADE,
     query_text      TEXT    NOT NULL,
     response        TEXT    NOT NULL,
+    model           TEXT,
     num_chunks      INTEGER DEFAULT 0,
     grounding_score REAL    DEFAULT 0,
     query_relevance REAL    DEFAULT 0,
     created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS app_settings (
+    key             TEXT    PRIMARY KEY,
+    value           TEXT    NOT NULL,
+    updated_at      TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE OR REPLACE FUNCTION _ragsmith_update_updated_at()
 RETURNS TRIGGER LANGUAGE plpgsql AS $$
@@ -198,11 +232,19 @@ END; $$;
 _SQLITE_MIGRATIONS = [
     "ALTER TABLE query_logs ADD COLUMN grounding_score REAL DEFAULT 0",
     "ALTER TABLE query_logs ADD COLUMN query_relevance REAL DEFAULT 0",
+    "ALTER TABLE query_logs ADD COLUMN session_id INTEGER REFERENCES chat_sessions(id) ON DELETE CASCADE",
+    "ALTER TABLE query_logs ADD COLUMN model TEXT",
+    "ALTER TABLE projects ADD COLUMN provider TEXT DEFAULT 'ollama'",
+    "ALTER TABLE chat_sessions ADD COLUMN provider TEXT DEFAULT NULL",
 ]
 
 _PG_MIGRATIONS = [
     "ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS grounding_score REAL DEFAULT 0",
     "ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS query_relevance REAL DEFAULT 0",
+    "ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS session_id INTEGER REFERENCES chat_sessions(id) ON DELETE CASCADE",
+    "ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS model TEXT",
+    "ALTER TABLE projects ADD COLUMN IF NOT EXISTS provider TEXT DEFAULT 'ollama'",
+    "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS provider TEXT DEFAULT NULL",
 ]
 
 

@@ -49,7 +49,7 @@ EXPOSE 8000
 
 # Health check — hits /health endpoint
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:9000/health || exit 1
+    CMD curl -f http://localhost:8000/health || exit 1
 
 # Gunicorn with uvicorn workers for production
 CMD ["gunicorn", "main:app", \

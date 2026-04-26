@@ -1,38 +1,94 @@
-# RAGSmith – Python dependencies (all open-source / free)
+aiofiles==23.2.1
+annotated-doc==0.0.4
+annotated-types==0.7.0
+anyio==4.4.0
 
-# ── Web Framework ─────────────────────────────────────────────────────────────
-fastapi>=0.110.0
-uvicorn[standard]>=0.29.0
-gunicorn>=21.2.0
-python-multipart>=0.0.9
-jinja2>=3.1.3
-aiofiles>=23.2.1
+boto3==1.34.162
+botocore==1.34.162
+s3transfer==0.10.2
 
-# ── Config ────────────────────────────────────────────────────────────────────
-pydantic>=2.0.0
-pydantic-settings>=2.2.0
+certifi==2024.7.4
+cffi==1.17.1
+charset-normalizer==3.3.2
+click==8.1.7
+colorama==0.4.6
+cryptography==42.0.8
 
-# ── Database ──────────────────────────────────────────────────────────────────
-psycopg2-binary>=2.9.9
+exceptiongroup==1.2.2
+faiss-cpu==1.8.0
 
-# ── Embeddings ────────────────────────────────────────────────────────────────
-sentence-transformers>=2.7.0
-torch>=2.2.0
+fastapi==0.111.0
+starlette==0.37.2
+uvicorn==0.30.6
+gunicorn==22.0.0
 
-# ── Vector Store ──────────────────────────────────────────────────────────────
-faiss-cpu>=1.8.0
+h11==0.14.0
+httpcore==1.0.5
+httptools==0.6.1
+httpx==0.27.0
 
-# ── Document Parsing ──────────────────────────────────────────────────────────
-pymupdf>=1.24.0
-pdfminer.six>=20221105
-python-docx>=1.1.0
+huggingface_hub==0.24.6
+hf-xet==1.1.5
 
-# ── AWS Storage ───────────────────────────────────────────────────────────────
-boto3>=1.34.0
+idna==3.7
+Jinja2==3.1.4
+MarkupSafe==2.1.5
 
-# ── Hybrid Search ────────────────────────────────────────────────────────────
-rank_bm25>=0.2.2
+jmespath==1.0.1
+joblib==1.4.2
 
-# ── Core ──────────────────────────────────────────────────────────────────────
-numpy>=1.26.0
-requests>=2.31.0
+lxml==5.2.2
+markdown-it-py==3.0.0
+mdurl==0.1.2
+
+mpmath==1.3.0
+networkx==3.3
+numpy==1.26.4
+packaging==24.1
+
+pdfminer.six==20231228
+PyMuPDF==1.24.9
+
+psycopg2-binary==2.9.9
+pycparser==2.22
+
+pydantic==2.8.2
+pydantic-settings==2.3.4
+pydantic_core==2.20.1
+
+Pygments==2.18.0
+
+python-dateutil==2.9.0.post0
+python-docx==1.1.2
+python-dotenv==1.0.1
+python-multipart==0.0.9
+PyYAML==6.0.1
+
+rank-bm25==0.2.2
+regex==2024.7.24
+requests==2.32.3
+urllib3==2.2.2
+
+rich==13.7.1
+
+safetensors==0.4.3
+scikit-learn==1.5.1
+scipy==1.13.1
+
+sentence-transformers==2.7.0
+transformers==4.44.2
+tokenizers==0.19.1
+
+torch==2.3.1
+
+sympy==1.13.1
+threadpoolctl==3.5.0
+tqdm==4.66.4
+
+typer==0.12.3
+
+typing_extensions==4.12.2
+typing-inspection==0.4.0
+
+watchfiles==0.22.0
+websockets==12.0

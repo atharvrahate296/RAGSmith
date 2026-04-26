@@ -5,13 +5,14 @@ Executes the full v2.0 RAG pipeline:
 """
 
 import logging
+import time
 from typing import List
 
 from fastapi import APIRouter, HTTPException
 
 from database import get_connection, db_fetchone, db_fetchall, db_execute, db_insert, ph
 from models.schemas import (
-    QueryRequest, QueryResponse, ChunkResult, QueryLogResponse,
+    QueryRequest, QueryResponse, ChunkResult, QueryLogResponse, RetrievalDetails,
 )
 from services.processor import search_index
 from services.reranker import rerank
@@ -36,6 +37,7 @@ def query_project(project_id: int, body: QueryRequest):
     conn = get_connection()
     try:
         project = _get_project_or_404(conn, project_id)
+        start_time = time.time()
 
         ready_count = db_fetchone(conn,
             f"SELECT COUNT(*) as cnt FROM documents WHERE project_id={ph()} AND status='ready'",
@@ -45,10 +47,34 @@ def query_project(project_id: int, body: QueryRequest):
             raise HTTPException(status_code=422,
                 detail="No indexed documents in this project. Upload and process a document first.")
 
-        model = project["model"]
+        # Determine effective model
+        # 1. Body override
+        # 2. Session override
+        # 3. Project default
+        model = body.model
+        session_id = body.session_id
+
+        if session_id:
+            session = db_fetchone(conn, f"SELECT * FROM chat_sessions WHERE id={ph()}", (session_id,))
+            if session:
+                if not model:
+                    model = session["model"]
+        
+        if not model:
+            model = project["model"]
+            
         top_k = project["top_k"]
 
+        # Fetch history if session_id exists
+        history = []
+        if session_id:
+            rows = db_fetchall(conn,
+                f"SELECT query_text, response FROM query_logs WHERE session_id={ph()} ORDER BY created_at ASC",
+                (session_id,))
+            history = [(r["query_text"], r["response"]) for r in rows]
+
         # ── Stage 1: Hybrid Search (FAISS + BM25 + RRF) — retrieve top-20 ────
+        retrieval_start = time.time()
         candidates = search_index(
             project_id=project_id,
             query_text=body.query,
@@ -56,23 +82,33 @@ def query_project(project_id: int, body: QueryRequest):
             embedding_model=EMBEDDING_MODEL,
             hybrid_recall_n=20,
         )
+        retrieval_time = (time.time() - retrieval_start) * 1000
 
         if not candidates:
             answer = ("No relevant information found in the knowledge base. "
                       "Try rephrasing or uploading more documents.")
             sources: List[ChunkResult] = []
             eval_result = None
+            retrieval_details = RetrievalDetails(
+                total_chunks_retrieved=0,
+                chunks=[],
+                retrieval_time_ms=retrieval_time,
+                rerank_time_ms=0.0
+            )
         else:
             # ── Stage 2: Cross-Encoder Re-ranking — cut to top_k ────────────
+            rerank_start = time.time()
             reranked = rerank(query=body.query, candidates=candidates, top_k=top_k)
+            rerank_time = (time.time() - rerank_start) * 1000
 
             # ── Stage 3: LLM Generation ────────────────────────────────────
             # Convert to (text, score, filename) tuples that generate_answer expects
             llm_chunks = [(c["text"], c["rrf_score"], c["filename"]) for c in reranked]
             try:
-                answer = generate_answer(query=body.query, context_chunks=llm_chunks, model=model)
+                answer = generate_answer(query=body.query, context_chunks=llm_chunks, model=model, history=history)
             except (ConnectionError, RuntimeError) as exc:
-                raise HTTPException(status_code=503, detail=str(exc))
+                logger.error("LLM generation failed: %s", exc)
+                raise HTTPException(status_code=503, detail=f"LLM error: {str(exc)}")
 
             # ── Stage 4: Confidence Evaluation ────────────────────────────
             eval_result = evaluate_response(
@@ -90,33 +126,54 @@ def query_project(project_id: int, body: QueryRequest):
                     text=c["text"][:500],
                     score=round(c["rrf_score"], 4),
                     doc_filename=c["filename"],
-                    dense_score=c.get("dense_score", 0.0),
-                    bm25_score=c.get("bm25_score", 0.0),
-                    rrf_score=c.get("rrf_score", 0.0),
+                    dense_score=round(c.get("dense_score", 0.0), 4),
+                    bm25_score=round(c.get("bm25_score", 0.0), 4),
+                    rrf_score=round(c.get("rrf_score", 0.0), 4),
                     rerank_score=round(c.get("rerank_score", 0.0), 4),
                     original_rank=c.get("original_rank", i),
                     is_top_source=(i == top_idx),
                 ))
+
+            # Build retrieval details
+            retrieval_details = RetrievalDetails(
+                total_chunks_retrieved=len(reranked),
+                chunks=sources,
+                retrieval_time_ms=round(retrieval_time, 2),
+                rerank_time_ms=round(rerank_time, 2)
+            )
 
         # ── Persist to query_logs ─────────────────────────────────────────────
         grounding = eval_result.grounding_score if eval_result else 0.0
         relevance = eval_result.query_relevance  if eval_result else 0.0
         confidence = eval_result.confidence_label if eval_result else "low"
 
-        db_insert(conn,
-            f"""INSERT INTO query_logs
-                (project_id, query_text, response, num_chunks, grounding_score, query_relevance)
-                VALUES ({ph()},{ph()},{ph()},{ph()},{ph()},{ph()})""",
-            (project_id, body.query, answer, len(sources), grounding, relevance))
+        try:
+            db_insert(conn,
+                f"""INSERT INTO query_logs
+                    (project_id, session_id, query_text, response, model, num_chunks, grounding_score, query_relevance)
+                    VALUES ({ph()},{ph()},{ph()},{ph()},{ph()},{ph()},{ph()},{ph()})""",
+                (project_id, session_id, body.query, answer, model, len(sources), grounding, relevance))
+        except Exception as exc:
+            logger.warning("Failed to persist query log: %s", exc)
 
         return QueryResponse(
             query=body.query,
             answer=answer,
             sources=sources,
+            retrieval_details=retrieval_details,
             model=model,
+            session_id=session_id,
             grounding_score=grounding,
             query_relevance=relevance,
             confidence_label=confidence,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Query execution error: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Query execution failed: {str(exc)}"
         )
     finally:
         conn.close()

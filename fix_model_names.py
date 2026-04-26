@@ -33,18 +33,14 @@ LLM_PROVIDER = env.get("LLM_PROVIDER", "ollama")
 GROQ_MODEL_MAP = {
     "llama3":   "llama3-8b-8192",
     "llama2":   "llama3-8b-8192",      # llama2 not on Groq, use llama3
-    "mistral":  "llama-3.1-8b-instant",# mistral not on Groq free tier
-    "phi3":     "gemma2-9b-it",        # phi3 not on Groq, closest is gemma2
-    "gemma":    "gemma2-9b-it",        # gemma → gemma2
+    "mistral":  "mistral:7b",
+    "gemma":    "gemma:2b",
 }
 
 OLLAMA_MODEL_MAP = {
-    "llama-3.1-8b-instant":   "llama3",
-    "llama-3.3-70b-versatile":"llama3",
-    "llama3-8b-8192":         "llama3",
-    "llama3-70b-8192":        "llama3",
-    "mixtral-8x7b-32768":     "mistral",
-    "gemma2-9b-it":           "gemma",
+    # old_shorthand: new_ollama_id
+    "mistral": "mistral:7b",
+    "gemma": "gemma:2b",
 }
 
 model_map = GROQ_MODEL_MAP if LLM_PROVIDER == "groq" else OLLAMA_MODEL_MAP
@@ -64,7 +60,7 @@ if DB_DRIVER == "postgres":
         sys.exit(1)
 else:
     import sqlite3
-    conn = sqlite3.connect("data/ragsmith.db")
+    conn = sqlite3.connect("data/ragsmith22.db")
     cur  = conn.cursor()
     ph   = "?"
 

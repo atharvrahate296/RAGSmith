@@ -21,6 +21,7 @@ def _to_response(row: dict) -> ProjectResponse:
         id=row["id"],
         name=row["name"],
         description=row.get("description") or "",
+        provider=row.get("provider") or "ollama",
         model=row["model"],
         top_k=row["top_k"],
         created_at=str(row["created_at"]),
@@ -51,7 +52,12 @@ def create_project(body: ProjectCreate):
     try:
         from config import get_settings
         cfg = get_settings()
-        default_model = cfg.effective_llm_model  # llama-3.1-8b-instant for groq, mistral for ollama
+        
+        # Determine default model based on provider
+        if body.provider == "groq":
+            default_model = "gemma:2b" # fallback
+        else:
+            default_model = "mistral:7b" # fallback
 
         existing = db_fetchone(conn, f"SELECT id FROM projects WHERE name={ph()}", (body.name,))
         if existing:
@@ -59,8 +65,8 @@ def create_project(body: ProjectCreate):
 
         effective_model = body.model or default_model
         doc_id = db_insert(conn,
-            f"INSERT INTO projects (name, description, model, top_k) VALUES ({ph()},{ph()},{ph()},{ph()})",
-            (body.name, body.description or "", effective_model, body.top_k or 5))
+            f"INSERT INTO projects (name, description, provider, model, top_k) VALUES ({ph()},{ph()},{ph()},{ph()},{ph()})",
+            (body.name, body.description or "", body.provider or "ollama", effective_model, body.top_k or 5))
 
         row = db_fetchone(conn, f"SELECT *, 0 as doc_count FROM projects WHERE id={ph()}", (doc_id,))
         logger.info("Created project '%s' (id=%d)", body.name, doc_id)
@@ -96,9 +102,15 @@ def update_project(project_id: int, body: ProjectUpdate):
             raise HTTPException(status_code=404, detail="Project not found")
 
         fields, values = [], []
+        if body.name is not None:
+            fields.append(f"name={ph()}")
+            values.append(body.name)
         if body.description is not None:
             fields.append(f"description={ph()}")
             values.append(body.description)
+        if body.provider is not None:
+            fields.append(f"provider={ph()}")
+            values.append(body.provider)
         if body.model is not None:
             fields.append(f"model={ph()}")
             values.append(body.model)
