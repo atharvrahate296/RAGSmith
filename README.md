@@ -80,7 +80,7 @@ RAGSmith is a complete RAG system that lets you upload documents, automatically 
 ### 1. Clone or Navigate to the Repository
 
 ```bash
-cd RAGSmithhh
+cd RAGSmith
 ```
 
 ### 2. Create and Activate Virtual Environment
